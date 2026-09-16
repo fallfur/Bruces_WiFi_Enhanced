@@ -175,7 +175,9 @@ std::vector<TrackerHit> scanForTrackers(uint32_t scanMs) {
     return hits;
 }
 
-constexpr uint32_t kHuntBurstMs = 400;  // one scan burst between beeps
+constexpr int kMaxLabelChars = 19;      // what fits the narrowest screen at FM
+constexpr uint32_t kHuntBurstMs = 400;  // one scan burst per refresh
+constexpr uint32_t kBeepWindowMs = 700; // clicking time between bursts
 constexpr uint32_t kLostAfterMs = 6000; // silence after this long unheard
 constexpr int kRssiFloor = -95;         // mapped to the slowest beep
 constexpr int kRssiCeiling = -40;       // mapped to the fastest
@@ -282,7 +284,8 @@ void huntTracker(const TrackerHit &target) {
     drawHuntStatic(target);
     drawHuntStatus(rssi, bestRssi, false);
 
-    while (!check(EscPress) && !returnToMenu) {
+    bool exiting = false;
+    while (!exiting && !returnToMenu) {
         int fresh = 0;
         if (pollTracker(target.address, fresh)) {
             smoothed = (smoothed * 0.6f) + ((float)fresh * 0.4f);
@@ -296,13 +299,44 @@ void huntTracker(const TrackerHit &target) {
 
         drawHuntStatus(rssi, bestRssi, lost);
 
-        if (!lost && millis() - lastBeep >= beepIntervalFor(rssi)) {
-            beepFor(rssi);
-            lastBeep = millis();
+        // Click here rather than once per pass. A scan burst blocks for
+        // kHuntBurstMs, so a single beep per loop capped the whole thing at
+        // about two clicks a second: the fast end of the scale, which is the
+        // half that tells you that you are on top of the tag, could never be
+        // heard at all.
+        uint32_t windowStart = millis();
+        while (millis() - windowStart < kBeepWindowMs) {
+            if (check(EscPress)) {
+                exiting = true;
+                break;
+            }
+            if (!lost && millis() - lastBeep >= beepIntervalFor(rssi)) {
+                beepFor(rssi);
+                lastBeep = millis();
+            }
+            delay(5);
         }
-
-        delay(20);
     }
+}
+
+// loopOptions() renders a label at FG when it fits and at FM otherwise, and
+// never smaller, so on a 240 px screen anything past about 19 characters runs
+// off the edge. Identify a tag in that budget: kind, signal, and either its
+// name or the tail of its address, which is the part that differs between two
+// tags of the same make sitting next to each other.
+String listLabel(const TrackerHit &hit) {
+    String id = hit.name;
+    id.trim();
+    if (id.isEmpty()) {
+        String mac = hit.address;
+        mac.replace(":", "");
+        id = mac.substring(mac.length() >= 4 ? mac.length() - 4 : 0);
+        id.toUpperCase();
+    }
+
+    String label = String(kindLabel(hit.kind)) + " " + String(hit.rssi) + " " + id;
+    if ((int)label.length() > kMaxLabelChars) label = label.substring(0, kMaxLabelChars);
+    return label;
 }
 
 } // namespace
@@ -326,9 +360,7 @@ void bleTrackerHunt() {
         std::vector<Option> menu;
         int chosen = -3;
         for (size_t i = 0; i < hits.size(); i++) {
-            String label = String("[") + kindLabel(hits[i].kind) + "] " + String(hits[i].rssi) + " ";
-            label += hits[i].name.isEmpty() ? hits[i].address : hits[i].name;
-            menu.emplace_back(label.c_str(), [&chosen, i]() { chosen = (int)i; });
+            menu.emplace_back(listLabel(hits[i]).c_str(), [&chosen, i]() { chosen = (int)i; });
         }
         if (hits.empty()) menu.emplace_back("No trackers found", [&chosen]() { chosen = -1; });
         menu.emplace_back("Rescan", [&chosen]() { chosen = -1; });
