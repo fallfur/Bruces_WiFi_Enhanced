@@ -319,7 +319,6 @@ template <typename G> void drawSnooze(G &g, int x, int y, uint32_t elapsed) {
     g.setTextSize(1);
 }
 
-template <typename G>
 // A flick of the tail in the run-up to each change of pose: the tell an animal
 // gives just before it moves.
 float wagAt(uint32_t elapsed, uint32_t transition) {
@@ -327,6 +326,7 @@ float wagAt(uint32_t elapsed, uint32_t transition) {
     return sinf((float)(transition - elapsed) / 55.0f) * 0.5f;
 }
 
+template <typename G>
 void drawScene(G &g, uint32_t elapsed, int lapX, int startX, int sitX, int restX, int ground) {
     int codeLines = 0;
     if (elapsed > T_TYPE) {
