@@ -68,9 +68,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.prepare_version.outputs.VERSION }}
+          SELECTED_ENV: ${{ env.SELECTED_ENV }}
         run: |
           set -euo pipefail
           ls -la Bruce-*.*
+          # The ELF (with symbols) and the map are what a panic backtrace from
+          # the device has to be decoded against, so they ship with the image
+          # they belong to instead of being rebuilt and guessed at later.
+          cp ".pio/build/${SELECTED_ENV}/firmware.elf" "Bruce-${SELECTED_ENV}-firmware.elf"
+          cp ".pio/build/${SELECTED_ENV}/firmware.map" "Bruce-${SELECTED_ENV}-firmware.map" || true
           tag="cardputer-${VERSION}"
           cat > release-notes.md <<NOTES
           Merged flash image for the \`m5stack-cardputer\` environment, built from \`${GITHUB_REF_NAME}\` at \`${GITHUB_SHA}\`.
