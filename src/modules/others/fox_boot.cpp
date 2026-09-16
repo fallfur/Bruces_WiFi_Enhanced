@@ -152,10 +152,10 @@ void limb(G &g, const Pose &p, float ax, float ay, float bx, float by, float r, 
 // as a look; leaving it out is what makes the face read as a face.
 template <typename G> void drawHead(G &g, const Pose &p, float hx, float hy) {
     dot(g, p, hx, hy, 7.5f, FOX_ORANGE);
-    tri(g, p, hx - 9, hy - 3, hx - 10, hy - 18, hx - 1, hy - 7, FOX_ORANGE);
-    tri(g, p, hx + 1, hy - 7, hx + 5, hy - 18, hx + 9, hy - 4, FOX_ORANGE);
-    tri(g, p, hx - 7, hy - 5, hx - 8, hy - 14, hx - 3, hy - 8, FOX_DARK);
-    tri(g, p, hx + 3, hy - 8, hx + 5, hy - 14, hx + 7, hy - 5, FOX_DARK);
+    tri(g, p, hx - 8, hy - 4, hx - 9, hy - 14, hx - 1, hy - 7, FOX_ORANGE);
+    tri(g, p, hx + 1, hy - 7, hx + 4, hy - 14, hx + 8, hy - 4, FOX_ORANGE);
+    tri(g, p, hx - 6, hy - 5, hx - 7, hy - 11, hx - 3, hy - 8, FOX_DARK);
+    tri(g, p, hx + 3, hy - 8, hx + 4, hy - 11, hx + 6, hy - 5, FOX_DARK);
     tri(g, p, hx + 2, hy - 4, hx + 17, hy + 2, hx + 2, hy + 4, FOX_ORANGE);
     tri(g, p, hx + 3, hy + 1, hx + 17, hy + 3, hx + 3, hy + 6, FOX_WHITE);
     dot(g, p, hx + 16, hy + 2, 1.6f, FOX_BLACK);
@@ -164,7 +164,7 @@ template <typename G> void drawHead(G &g, const Pose &p, float hx, float hy) {
 template <typename G> void drawBody(G &g, const Pose &p, float fx, float fy, float bx, float by) {
     for (int i = 0; i <= 6; i++) {
         float f = i / 6.0f;
-        dot(g, p, bx + (fx - bx) * f, by + (fy - by) * f, 6.5f + 1.5f * sinf(f * (float)PI), FOX_ORANGE);
+        dot(g, p, bx + (fx - bx) * f, by + (fy - by) * f, 7.4f + 1.7f * sinf(f * (float)PI), FOX_ORANGE);
     }
 }
 
@@ -263,10 +263,10 @@ template <typename G> void poseCurl(G &g, const Pose &p, float tuck) {
 
     float hy = -10 + 3 * tuck;
     dot(g, p, 9, hy, 8.0f, FOX_ORANGE);
-    tri(g, p, 2, hy - 3, 0, hy - 14, 8, hy - 6, FOX_ORANGE);
-    tri(g, p, 9, hy - 6, 13, hy - 14, 16, hy - 3, FOX_ORANGE);
-    tri(g, p, 3, hy - 4, 2, hy - 11, 6, hy - 7, FOX_DARK);
-    tri(g, p, 11, hy - 6, 13, hy - 11, 15, hy - 4, FOX_DARK);
+    tri(g, p, 3, hy - 4, 2, hy - 12, 8, hy - 6, FOX_ORANGE);
+    tri(g, p, 9, hy - 6, 13, hy - 12, 15, hy - 4, FOX_ORANGE);
+    tri(g, p, 4, hy - 5, 4, hy - 10, 7, hy - 7, FOX_DARK);
+    tri(g, p, 11, hy - 6, 12, hy - 10, 14, hy - 5, FOX_DARK);
     tri(g, p, 12, hy - 1, 24, hy + 4, 12, hy + 6, FOX_ORANGE);
     tri(g, p, 13, hy + 2, 24, hy + 5, 13, hy + 7, FOX_WHITE);
     dot(g, p, 23, hy + 4, 1.6f, FOX_BLACK);
