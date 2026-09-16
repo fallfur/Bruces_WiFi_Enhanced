@@ -559,7 +559,6 @@ struct KarmaRuntimeState {
     uint16_t hop_interval = DEFAULT_HOP_INTERVAL;
     File probe_file;
     RingbufHandle_t macRingBuffer = nullptr;
-    String filen = "";
     std::vector<ProbeRequest> probeBuffer;
     uint16_t probeBufferIndex = 0;
     bool bufferWrapped = false;
@@ -731,7 +730,6 @@ static void destroyActivePortal() {
 #define hop_interval (state().hop_interval)
 #define _probe_file (state().probe_file)
 #define macRingBuffer (state().macRingBuffer)
-#define filen (state().filen)
 #define probeBuffer (state().probeBuffer)
 #define probeBufferIndex (state().probeBufferIndex)
 #define bufferWrapped (state().bufferWrapped)
@@ -899,7 +897,9 @@ static size_t countEvilPortalCreds() {
 String generateUniqueFilename(FS &fs, bool compressed) {
     String basePath = "/ProbeData/";
     String baseName = compressed ? "karma_compressed_" : "probe_capture_";
-    String extension = compressed ? ".bin" : ".txt";
+    // .csv, because that is what the text format is: a header row and one
+    // comma-separated record per probe. A .txt made every viewer guess.
+    String extension = compressed ? ".bin" : ".csv";
     if (!fs.exists(basePath)) fs.mkdir(basePath);
     int counter = 1;
     String filename;
@@ -2665,13 +2665,11 @@ void karma_setup() {
     if (getFsStorage(Fs)) {
         FileSys = (Fs == &SD) ? "SD" : "LittleFS";
         is_LittleFS = (Fs == &LittleFS);
-        filen = generateUniqueFilename(*Fs, false);
         storageAvailable = true;
     } else {
         Fs = &LittleFS;
         FileSys = "LittleFS";
         is_LittleFS = true;
-        filen = generateUniqueFilename(LittleFS, false);
         storageAvailable = checkLittleFsSizeNM();
     }
     if (storageAvailable && !Fs->exists("/ProbeData")) Fs->mkdir("/ProbeData");
@@ -3341,10 +3339,17 @@ void karma_setup() {
                  [&]() {
                      FS *saveFs;
                      if (getFsStorage(saveFs) && storageAvailable) {
-                         saveProbesToFile(*saveFs, true);
-                         displayTextLine("Probes saved!");
+                         // CSV, not the compressed format: nothing reads KRM
+                         // back, so a save nobody can open is not a save.
+                         String saved = saveProbesToFile(*saveFs, false);
+                         if (saved.isEmpty()) {
+                             displayTextLine("Save failed");
+                         } else {
+                             int slash = saved.lastIndexOf('/');
+                             displayTextLine(slash >= 0 ? saved.substring(slash + 1) : saved);
+                         }
                      } else displayTextLine("No storage!");
-                     delay(1000);
+                     delay(1500);
                  }                                     },
 
                 {"Clear Probes",
@@ -3406,18 +3411,27 @@ void karma_setup() {
     }
 }
 
-void saveProbesToFile(FS &fs, bool compressed) {
-    if (!storageAvailable) return;
+String saveProbesToFile(FS &fs, bool compressed) {
+    if (!storageAvailable) return "";
     if (!fs.exists("/ProbeData")) fs.mkdir("/ProbeData");
+
+    // Name the file after the format actually being written. This used to come
+    // from a session-wide "filen" that karma_setup() fixed to .txt when Karma
+    // started, so saving the compressed format wrote a KRM binary blob into a
+    // file called probe_capture_N.txt -- unreadable, and nothing in the
+    // firmware reads that format back. Deriving it here also means each save
+    // gets its own file instead of overwriting the session's one.
+    String filename = generateUniqueFilename(fs, compressed);
+    bool written = false;
+
     if (compressed) {
-        File file = fs.open(filen, FILE_WRITE);
+        File file = fs.open(filename, FILE_WRITE);
         if (file) {
             file.write('K');
             file.write('R');
             file.write('M');
             file.write(0x02);
             int count = bufferWrapped ? MAX_PROBE_BUFFER : probeBufferIndex;
-            count = std::min(count, 100);
             uint16_t count16 = (uint16_t)count;
             file.write((uint8_t *)&count16, 2);
             for (int i = 0; i < count; i++) {
@@ -3436,29 +3450,54 @@ void saveProbesToFile(FS &fs, bool compressed) {
                     file.write((uint8_t *)probe.ssid, ssidLen);
             }
             file.close();
+            written = true;
         }
     } else {
-        File file = fs.open(filen, FILE_WRITE);
+        File file = fs.open(filename, FILE_WRITE);
         if (file) {
-            file.println("Timestamp,MAC,RSSI,Channel,SSID");
+            file.println("MAC,RSSI,Channel,SSID");
             int count = bufferWrapped ? MAX_PROBE_BUFFER : probeBufferIndex;
-            count = std::min(count, 100);
+
+            // One row per (client, ESSID). A phone repeats the same directed
+            // probe every few seconds, so the raw buffer holds the same pair
+            // many times over and the file said nothing the first row had not
+            // already said. The sighting kept is the strongest one, which is
+            // the best estimate of how close the client came and carries the
+            // channel it was heard best on. Rows stay in first-seen order.
+            std::vector<int> rows;
+            rows.reserve(count);
             for (int i = 0; i < count; i++) {
                 int idx = bufferWrapped ? (probeBufferIndex + i) % MAX_PROBE_BUFFER : i;
                 const ProbeRequest &probe = probeBuffer[idx];
-                if (!probeSSIDEmpty(probe) && !probeSSIDEquals(probe, "*WILDCARD*")) {
-                    file.printf(
-                        "%lu,%s,%d,%d,\"%s\"\n",
-                        probe.timestamp,
-                        probe.mac,
-                        probe.rssi,
-                        probe.channel,
-                        probe.ssid
-                    );
+                if (probeSSIDEmpty(probe) || probeSSIDEquals(probe, "*WILDCARD*")) continue;
+
+                bool merged = false;
+                for (int &kept : rows) {
+                    const ProbeRequest &seen = probeBuffer[kept];
+                    if (strcmp(seen.mac, probe.mac) != 0 || strcmp(seen.ssid, probe.ssid) != 0) continue;
+                    if (probe.rssi > seen.rssi) kept = idx;
+                    merged = true;
+                    break;
                 }
+                if (!merged) rows.push_back(idx);
+            }
+
+            for (int idx : rows) {
+                const ProbeRequest &probe = probeBuffer[idx];
+                // An SSID is 32 arbitrary bytes, quotes included, so the field
+                // is quoted and embedded quotes are doubled per RFC 4180.
+                // Otherwise one crafted ESSID shifts every column.
+                String ssid = probe.ssid;
+                ssid.replace("\"", "\"\"");
+                file.printf("%s,%d,%d,\"%s\"\n", probe.mac, probe.rssi, probe.channel, ssid.c_str());
             }
             file.close();
+            written = true;
         }
     }
+
+    // An unopenable file is not a save: say so instead of naming a path that
+    // does not exist.
+    return written ? filename : String("");
 }
 #endif
