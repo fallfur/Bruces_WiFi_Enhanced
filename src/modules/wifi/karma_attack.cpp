@@ -1637,6 +1637,10 @@ void queueProbeResponse(const ProbeRequest &probe, const RSNInfo &rsn) {
     }
     if (responseQueue.size() >= 10) return;
     if (probeSSIDEquals(probe, "*WILDCARD*")) return;
+    // Answering a Wi-Fi Direct probe emulates the ESSID on the air just as much
+    // as the rogue AP does, and for a client that can only join its group owner
+    // over WPS/P2P it is equally pointless -- see isWifiDirectSSID().
+    if (gKarmaSkipWifiDirect && isWifiDirectSSID(probe.ssid)) return;
     ProbeResponseTask task;
     task.ssid = probe.ssid;
     task.targetMAC = probe.mac;
