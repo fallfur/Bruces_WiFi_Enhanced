@@ -654,7 +654,30 @@ static bool samePendingPortal(const PendingPortal &a, const PendingPortal &b) {
            a.templateFile == b.templateFile && a.isCloneAttack == b.isCloneAttack;
 }
 
+// Menu-settable knobs. They live outside KarmaRuntimeState on purpose: that
+// state is freed when Karma exits, and a choice made in the menu should still
+// be in force the next time Karma is started (both reset on reboot).
+static uint32_t gKarmaPortalDwellMs = KARMA_PORTAL_DWELL_MS;
+static bool gKarmaSkipWifiDirect = true;
+
+// Wi-Fi Direct group SSIDs always start with "DIRECT-" followed by two random
+// characters, which the P2P spec mandates. A client probing for one is looking
+// for the group owner it is already paired with, and joining that group is
+// negotiated over WPS/P2P with WPA2 -- it will never associate to a cloned open
+// AP, let alone submit a captive portal form. Cloning one only burns a whole
+// dwell slot on a target that cannot convert and leaves a conspicuous
+// "DIRECT-..." AP on the air. The probes are still recorded: they are useful
+// intel, they are just not portal material.
+static bool isWifiDirectSSID(const String &ssid) {
+    static const char kPrefix[] = "DIRECT-";
+    constexpr size_t kPrefixLen = sizeof(kPrefix) - 1;
+    if (ssid.length() < kPrefixLen) return false;
+    return strncasecmp(ssid.c_str(), kPrefix, kPrefixLen) == 0;
+}
+
 static bool enqueuePendingPortal(const PendingPortal &portal, bool prioritize) {
+    if (gKarmaSkipWifiDirect && isWifiDirectSSID(portal.ssid)) return false;
+
     auto &queue = pendingPortalsRef();
 
     for (auto &existing : queue) {
@@ -764,11 +787,6 @@ static void destroyActivePortal() {
 #define ssidFrequency (state().ssidFrequency)
 #define popularSSIDs (state().popularSSIDs)
 #define pendingPortals (state().pendingPortals)
-
-// Portal dwell lives outside KarmaRuntimeState on purpose: that state is freed
-// when Karma exits, and a dwell picked from the menu should still be in force
-// the next time Karma is started (it resets to the default on reboot).
-static uint32_t gKarmaPortalDwellMs = KARMA_PORTAL_DWELL_MS;
 
 void forceFullRedraw() {
     tft.fillScreen(bruceConfig.bgColor);
@@ -2892,6 +2910,14 @@ void karma_setup() {
                      loopOptions(dwellOptions);
                      screenNeedsRedraw = true;
                  }                                     },
+
+                {gKarmaSkipWifiDirect ? "Wi-Fi Direct: skip" : "Wi-Fi Direct: clone",
+                 [&]() {
+                     gKarmaSkipWifiDirect = !gKarmaSkipWifiDirect;
+                     displayTextLine(gKarmaSkipWifiDirect ? "DIRECT-* skipped" : "DIRECT-* cloned");
+                     delay(1000);
+                     screenNeedsRedraw = true;
+                 }                   },
 
                 {"Rotate MAC Now",
                  [&]() {
