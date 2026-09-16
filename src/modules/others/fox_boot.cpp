@@ -24,23 +24,27 @@
 namespace {
 
 // RGB565, kept independent of the theme: the point is that it reads as a fox.
-constexpr uint16_t FOX_ORANGE = 0xEB40;
-constexpr uint16_t FOX_DARK = 0x9A00;
-constexpr uint16_t FOX_WHITE = 0xFFFF;
-constexpr uint16_t FOX_BLACK = 0x0000;
+constexpr uint16_t FOX_ORANGE = 0xC325; // rust coat
+constexpr uint16_t FOX_DARK = 0x59A4;   // inside the ears
+constexpr uint16_t FOX_LEG = 0x4943;    // the dark stockings
+constexpr uint16_t FOX_WHITE = 0xEE75;  // cream: muzzle, tail tip
+constexpr uint16_t FOX_BLACK = 0x2104;
 constexpr uint16_t LAPTOP_BODY = 0xC618;
 constexpr uint16_t LAPTOP_EDGE = 0x8410;
 constexpr uint16_t LAPTOP_SCREEN = 0x0841;
 constexpr uint16_t CODE_GREEN = 0x07EB;
 
 // Sequence, in milliseconds from the first frame.
-constexpr uint32_t T_WAIT = 600;   // banner alone
-constexpr uint32_t T_REAR = 1700;  // reared up on the hind legs
-constexpr uint32_t T_LAND = 2900;  // pounce lands at the keyboard
-constexpr uint32_t T_TYPE = 3300;  // paws start moving
-constexpr uint32_t T_CURL = 10500; // work done, curls up
-constexpr uint32_t T_SLEEP = 11300;
-constexpr uint32_t T_END = 17000;
+constexpr uint32_t T_WAIT = 500;     // banner alone
+constexpr uint32_t T_WALK = 2000;    // trots in from the left
+constexpr uint32_t T_REAR = 2800;    // reared up on the hind legs
+constexpr uint32_t T_LAND = 3900;    // pounce lands at the keyboard
+constexpr uint32_t T_TYPE = 4300;    // paws start moving
+constexpr uint32_t T_LEAVE = 9800;   // work done, walks off to the left
+constexpr uint32_t T_ARRIVE = 11600; // reaches its corner
+constexpr uint32_t T_CURL = 12400;   // curled up
+constexpr uint32_t T_SLEEP = 12400;
+constexpr uint32_t T_END = 18000;
 
 const char kCaption[] = "modded by Fall";
 constexpr uint32_t kCaptionCharMs = 200;
@@ -50,9 +54,11 @@ int gGround = 0;
 
 struct Pose {
     float x, y, ang;
+    bool flip = false; // mirrored: the fox faces -x
 };
 
 void pt(const Pose &p, float lx, float ly, int &ox, int &oy) {
+    if (p.flip) lx = -lx;
     float sx = lx * gScale;
     float sy = ly * gScale;
     float ca = cosf(p.ang);
@@ -61,11 +67,66 @@ void pt(const Pose &p, float lx, float ly, int &ox, int &oy) {
     oy = (int)lroundf(p.y + sx * sa + sy * ca);
 }
 
+int gBlock = 3;
+
+inline int snapDown(int v) { return (v >= 0 ? (v / gBlock) : ((v - gBlock + 1) / gBlock)) * gBlock; }
+
+// Circles and triangles are quantised onto a block grid instead of being drawn
+// smooth. Round shapes at this size read as blobs; stepping them gives the
+// chunky look the sprite work of the era had, and each shape is still only a
+// handful of fillRect calls rather than a per-pixel loop.
+template <typename G> void blockCircle(G &g, int cx, int cy, int r, uint16_t color) {
+    for (int y = snapDown(cy - r); y <= cy + r; y += gBlock) {
+        float dy = (float)y + gBlock * 0.5f - (float)cy;
+        float d2 = (float)r * (float)r - dy * dy;
+        if (d2 <= 0.0f) continue;
+        int half = (int)sqrtf(d2);
+        int x0 = snapDown(cx - half);
+        int x1 = snapDown(cx + half) + gBlock;
+        g.fillRect(x0, y, x1 - x0, gBlock, color);
+    }
+}
+
+template <typename G> void blockTri(G &g, int x1, int y1, int x2, int y2, int x3, int y3, uint16_t color) {
+    int ymin = y1 < y2 ? (y1 < y3 ? y1 : y3) : (y2 < y3 ? y2 : y3);
+    int ymax = y1 > y2 ? (y1 > y3 ? y1 : y3) : (y2 > y3 ? y2 : y3);
+    const int ex[3][2] = {
+        {x1, x2},
+        {x2, x3},
+        {x3, x1}
+    };
+    const int ey[3][2] = {
+        {y1, y2},
+        {y2, y3},
+        {y3, y1}
+    };
+
+    for (int y = snapDown(ymin); y <= ymax; y += gBlock) {
+        float my = (float)y + gBlock * 0.5f;
+        float lo = 1e9f, hi = -1e9f;
+        for (int e = 0; e < 3; e++) {
+            float ay = (float)ey[e][0], by = (float)ey[e][1];
+            if ((my < ay && my < by) || (my > ay && my > by)) continue;
+            float ax = (float)ex[e][0], bx = (float)ex[e][1];
+            float x = (fabsf(by - ay) < 0.001f) ? ax : ax + (bx - ax) * (my - ay) / (by - ay);
+            if (x < lo) lo = x;
+            if (x > hi) hi = x;
+            float other = (fabsf(by - ay) < 0.001f) ? bx : x;
+            if (other < lo) lo = other;
+            if (other > hi) hi = other;
+        }
+        if (hi < lo) continue;
+        int x0 = snapDown((int)lo);
+        int xe = snapDown((int)hi) + gBlock;
+        g.fillRect(x0, y, xe - x0, gBlock, color);
+    }
+}
+
 template <typename G> void dot(G &g, const Pose &p, float lx, float ly, float r, uint16_t color) {
     int x, y;
     pt(p, lx, ly, x, y);
     int rr = (int)lroundf(r * gScale);
-    g.fillCircle(x, y, rr < 1 ? 1 : rr, color);
+    blockCircle(g, x, y, rr < 1 ? 1 : rr, color);
 }
 
 template <typename G>
@@ -74,7 +135,7 @@ void tri(G &g, const Pose &p, float ax, float ay, float bx, float by, float cx, 
     pt(p, ax, ay, x1, y1);
     pt(p, bx, by, x2, y2);
     pt(p, cx, cy, x3, y3);
-    g.fillTriangle(x1, y1, x2, y2, x3, y3, color);
+    blockTri(g, x1, y1, x2, y2, x3, y3, color);
 }
 
 // A limb is a short run of overlapping circles, so it rotates with the body.
@@ -86,80 +147,107 @@ void limb(G &g, const Pose &p, float ax, float ay, float bx, float by, float r, 
     }
 }
 
-template <typename G> void drawHead(G &g, const Pose &p, float hx, float hy, bool eyeShut) {
+// Cute proportions: a big head, tall ears, a stubby muzzle and no eyes. An eye
+// at this size is one dark block on an orange face and reads as a smudge, not
+// as a look; leaving it out is what makes the face read as a face.
+template <typename G> void drawHead(G &g, const Pose &p, float hx, float hy) {
     dot(g, p, hx, hy, 7.5f, FOX_ORANGE);
-    tri(g, p, hx - 8, hy - 4, hx - 9, hy - 15, hx - 1, hy - 7, FOX_ORANGE);
-    tri(g, p, hx + 1, hy - 7, hx + 4, hy - 15, hx + 8, hy - 5, FOX_ORANGE);
-    tri(g, p, hx - 6, hy - 6, hx - 7, hy - 12, hx - 3, hy - 8, FOX_DARK);
-    tri(g, p, hx + 3, hy - 8, hx + 4, hy - 12, hx + 6, hy - 6, FOX_DARK);
-    tri(g, p, hx + 4, hy - 2, hx + 16, hy + 6, hx + 3, hy + 7, FOX_WHITE);
-    dot(g, p, hx + 15, hy + 5, 1.8f, FOX_BLACK);
-    if (eyeShut) {
-        int x1, y1, x2, y2;
-        pt(p, hx + 2, hy - 2, x1, y1);
-        pt(p, hx + 6, hy - 2, x2, y2);
-        g.drawLine(x1, y1, x2, y2, FOX_BLACK);
-    } else {
-        dot(g, p, hx + 4, hy - 2, 1.7f, FOX_BLACK);
-    }
+    tri(g, p, hx - 9, hy - 3, hx - 10, hy - 18, hx - 1, hy - 7, FOX_ORANGE);
+    tri(g, p, hx + 1, hy - 7, hx + 5, hy - 18, hx + 9, hy - 4, FOX_ORANGE);
+    tri(g, p, hx - 7, hy - 5, hx - 8, hy - 14, hx - 3, hy - 8, FOX_DARK);
+    tri(g, p, hx + 3, hy - 8, hx + 5, hy - 14, hx + 7, hy - 5, FOX_DARK);
+    tri(g, p, hx + 2, hy - 4, hx + 17, hy + 2, hx + 2, hy + 4, FOX_ORANGE);
+    tri(g, p, hx + 3, hy + 1, hx + 17, hy + 3, hx + 3, hy + 6, FOX_WHITE);
+    dot(g, p, hx + 16, hy + 2, 1.6f, FOX_BLACK);
 }
 
 template <typename G> void drawBody(G &g, const Pose &p, float fx, float fy, float bx, float by) {
     for (int i = 0; i <= 6; i++) {
         float f = i / 6.0f;
-        dot(g, p, bx + (fx - bx) * f, by + (fy - by) * f, 8.0f + 2.0f * sinf(f * (float)PI), FOX_ORANGE);
+        dot(g, p, bx + (fx - bx) * f, by + (fy - by) * f, 6.5f + 1.5f * sinf(f * (float)PI), FOX_ORANGE);
     }
 }
 
-template <typename G> void drawTailStraight(G &g, const Pose &p) {
-    const float px[4] = {-16, -23, -29, -34};
-    const float py[4] = {-2, -5, -9, -14};
-    for (int i = 0; i < 4; i++) dot(g, p, px[i], py[i], 7.0f - i * 0.7f, FOX_ORANGE);
-    dot(g, p, -36, -16, 3.5f, FOX_WHITE);
+// The tail swings about its root, so a wag is one angle applied to every
+// segment rather than a second set of poses.
+void wagPoint(float rx, float ry, float &px, float &py, float wag) {
+    float dx = px - rx, dy = py - ry;
+    px = rx + dx * cosf(wag) - dy * sinf(wag);
+    py = ry + dx * sinf(wag) + dy * cosf(wag);
+}
+
+template <typename G> void drawTailStraight(G &g, const Pose &p, float wag) {
+    const float bx[4] = {-16, -23, -29, -34};
+    const float by[4] = {-2, -5, -9, -14};
+    for (int i = 0; i < 4; i++) {
+        float x = bx[i], y = by[i];
+        wagPoint(bx[0], by[0], x, y, wag);
+        dot(g, p, x, y, 7.0f - i * 0.7f, FOX_ORANGE);
+    }
+    float tx = bx[3] - 2, ty = by[3] - 2;
+    wagPoint(bx[0], by[0], tx, ty, wag);
+    dot(g, p, tx, ty, 4.0f, FOX_WHITE);
+}
+
+// Trotting: the legs swing and the body bobs.
+template <typename G> void poseWalk(G &g, const Pose &p, float phase, float wag) {
+    drawTailStraight(g, p, wag);
+    drawBody(g, p, 14, -2, -14, 0);
+    limb(g, p, -9, 5, -9 + 5 * sinf(phase), 19, 2.6f, FOX_LEG);
+    limb(g, p, 9, 5, 10 + 5 * sinf(phase + (float)PI), 19, 2.6f, FOX_LEG);
+    dot(g, p, -9 + 5 * sinf(phase), 20, 2.4f, FOX_LEG);
+    dot(g, p, 10 + 5 * sinf(phase + (float)PI), 20, 2.4f, FOX_LEG);
+    drawHead(g, p, 21, -9);
 }
 
 // Up on the hind legs with the front paws tucked: the wind-up before a pounce.
-template <typename G> void poseRear(G &g, const Pose &p) {
-    drawTailStraight(g, p);
+template <typename G> void poseRear(G &g, const Pose &p, float wag) {
+    drawTailStraight(g, p, wag);
     drawBody(g, p, 10, -14, -10, 6);
-    limb(g, p, -8, 8, -8, 19, 3.5f, FOX_ORANGE);
-    limb(g, p, 4, -6, 11, -1, 2.6f, FOX_ORANGE);
-    dot(g, p, -8, 20, 3.0f, FOX_WHITE);
-    dot(g, p, 12, 0, 2.6f, FOX_WHITE);
-    drawHead(g, p, 22, -22, false);
+    limb(g, p, -8, 8, -8, 18, 3.0f, FOX_LEG);
+    limb(g, p, 4, -6, 11, -1, 2.4f, FOX_LEG);
+    dot(g, p, -8, 19, 2.6f, FOX_LEG);
+    dot(g, p, 12, 0, 2.4f, FOX_LEG);
+    drawHead(g, p, 21, -23);
 }
 
 // Stretched out mid-air, legs trailing, nose leading.
 template <typename G> void poseLeap(G &g, const Pose &p) {
-    drawTailStraight(g, p);
+    drawTailStraight(g, p, 0.0f);
     drawBody(g, p, 15, -3, -15, 2);
-    limb(g, p, -11, 4, -22, 9, 2.8f, FOX_ORANGE);
-    limb(g, p, 8, 5, 17, 9, 2.6f, FOX_ORANGE);
-    dot(g, p, -23, 10, 2.4f, FOX_WHITE);
-    dot(g, p, 18, 10, 2.4f, FOX_WHITE);
-    drawHead(g, p, 22, -8, false);
+    limb(g, p, -11, 4, -22, 9, 2.6f, FOX_LEG);
+    limb(g, p, 8, 5, 17, 9, 2.4f, FOX_LEG);
+    dot(g, p, -23, 10, 2.2f, FOX_LEG);
+    dot(g, p, 18, 10, 2.2f, FOX_LEG);
+    drawHead(g, p, 21, -9);
 }
 
 // Sitting upright on the haunches, forepaws out on the keyboard.
-template <typename G> void poseSit(G &g, const Pose &p, float pawA, float pawB, bool blink) {
+template <typename G> void poseSit(G &g, const Pose &p, float pawA, float pawB, float wag) {
     dot(g, p, -1, 1, 11.0f, FOX_ORANGE);
+
     const float tx[4] = {-11, -11, -4, 4};
     const float ty[4] = {7, 12, 14, 14};
-    for (int i = 0; i < 4; i++) dot(g, p, tx[i], ty[i], 6.0f - i * 0.4f, FOX_ORANGE);
-    dot(g, p, 11, 13, 4.0f, FOX_WHITE);
+    for (int i = 0; i < 4; i++) {
+        float x = tx[i], y = ty[i];
+        wagPoint(tx[0], ty[0], x, y, wag);
+        dot(g, p, x, y, 6.0f - i * 0.4f, FOX_ORANGE);
+    }
+    float tipx = tx[3] + 7, tipy = ty[3] - 1;
+    wagPoint(tx[0], ty[0], tipx, tipy, wag);
+    dot(g, p, tipx, tipy, 4.0f, FOX_WHITE);
 
     for (int i = 0; i <= 5; i++) {
         float f = i / 5.0f;
-        dot(g, p, 2 + 7 * f, -3 - 18 * f, 9.0f - 2.5f * f, FOX_ORANGE);
+        dot(g, p, 2 + 7 * f, -3 - 17 * f, 8.5f - 2.0f * f, FOX_ORANGE);
     }
-    dot(g, p, 10, -13, 3.0f, FOX_WHITE);
 
-    limb(g, p, 9, -17, 17, 2 + pawA, 2.6f, FOX_ORANGE);
-    limb(g, p, 11, -15, 19, 4 + pawB, 2.6f, FOX_ORANGE);
-    dot(g, p, 18, 2 + pawA, 2.4f, FOX_WHITE);
-    dot(g, p, 20, 4 + pawB, 2.4f, FOX_WHITE);
+    limb(g, p, 9, -16, 17, 2 + pawA, 2.4f, FOX_LEG);
+    limb(g, p, 11, -14, 19, 4 + pawB, 2.4f, FOX_LEG);
+    dot(g, p, 18, 2 + pawA, 2.2f, FOX_LEG);
+    dot(g, p, 20, 4 + pawB, 2.2f, FOX_LEG);
 
-    drawHead(g, p, 13, -29, blink);
+    drawHead(g, p, 12, -29);
 }
 
 // Curled up asleep, nose under the tail.
@@ -168,25 +256,20 @@ template <typename G> void poseCurl(G &g, const Pose &p, float tuck) {
     dot(g, p, -6, 4, 9.0f, FOX_ORANGE);
     dot(g, p, 7, 3, 8.0f, FOX_ORANGE);
 
-    // Tail wrapped around the front.
     const float tx[5] = {-13, -10, -2, 7, 13};
     const float ty[5] = {2, 9, 13, 12, 7};
     for (int i = 0; i < 5; i++) dot(g, p, tx[i], ty[i], 6.0f - i * 0.3f, FOX_ORANGE);
     dot(g, p, 16, 2, 4.5f, FOX_WHITE);
 
-    // Head tucked in, sinking as it settles.
     float hy = -10 + 3 * tuck;
-    dot(g, p, 9, hy, 7.0f, FOX_ORANGE);
-    tri(g, p, 2, hy - 4, 0, hy - 13, 8, hy - 6, FOX_ORANGE);
-    tri(g, p, 9, hy - 6, 12, hy - 13, 15, hy - 4, FOX_ORANGE);
-    tri(g, p, 3, hy - 5, 2, hy - 10, 6, hy - 7, FOX_DARK);
-    tri(g, p, 11, hy - 6, 12, hy - 11, 14, hy - 5, FOX_DARK);
-    tri(g, p, 12, hy + 1, 19, hy + 5, 12, hy + 6, FOX_WHITE);
-    dot(g, p, 18, hy + 4, 1.6f, FOX_BLACK);
-    int x1, y1, x2, y2;
-    pt(p, 11, hy - 1, x1, y1);
-    pt(p, 15, hy - 1, x2, y2);
-    g.drawLine(x1, y1, x2, y2, FOX_BLACK);
+    dot(g, p, 9, hy, 8.0f, FOX_ORANGE);
+    tri(g, p, 2, hy - 3, 0, hy - 14, 8, hy - 6, FOX_ORANGE);
+    tri(g, p, 9, hy - 6, 13, hy - 14, 16, hy - 3, FOX_ORANGE);
+    tri(g, p, 3, hy - 4, 2, hy - 11, 6, hy - 7, FOX_DARK);
+    tri(g, p, 11, hy - 6, 13, hy - 11, 15, hy - 4, FOX_DARK);
+    tri(g, p, 12, hy - 1, 24, hy + 4, 12, hy + 6, FOX_ORANGE);
+    tri(g, p, 13, hy + 2, 24, hy + 5, 13, hy + 7, FOX_WHITE);
+    dot(g, p, 23, hy + 4, 1.6f, FOX_BLACK);
 }
 
 // Laptop seen three-quarters from the front: a skewed base and a lid leaning
@@ -236,18 +319,32 @@ template <typename G> void drawSnooze(G &g, int x, int y, uint32_t elapsed) {
     g.setTextSize(1);
 }
 
-template <typename G> void drawScene(G &g, uint32_t elapsed, int lapX, int startX, int sitX, int ground) {
+template <typename G>
+// A flick of the tail in the run-up to each change of pose: the tell an animal
+// gives just before it moves.
+float wagAt(uint32_t elapsed, uint32_t transition) {
+    if (elapsed + 800 < transition || elapsed >= transition) return 0.0f;
+    return sinf((float)(transition - elapsed) / 55.0f) * 0.5f;
+}
+
+void drawScene(G &g, uint32_t elapsed, int lapX, int startX, int sitX, int restX, int ground) {
     int codeLines = 0;
     if (elapsed > T_TYPE) {
-        uint32_t typed = (elapsed < T_CURL ? elapsed : T_CURL) - T_TYPE;
+        uint32_t typed = (elapsed < T_LEAVE ? elapsed : T_LEAVE) - T_TYPE;
         codeLines = (int)(typed / 500) % 6;
     }
     drawLaptop(g, lapX, ground, codeLines);
 
-    if (elapsed >= T_WAIT && elapsed < T_REAR) {
-        float f = (float)(elapsed - T_WAIT) / (float)(T_REAR - T_WAIT);
+    if (elapsed >= T_WAIT && elapsed < T_WALK) {
+        // Trots in before the pounce, so the leap has somewhere to come from.
+        float f = (float)(elapsed - T_WAIT) / (float)(T_WALK - T_WAIT);
+        float phase = (float)(elapsed - T_WAIT) / 90.0f;
+        Pose p = {startX - (26 - 26 * f) * gScale, ground - (12 + fabsf(sinf(phase)) * 2) * gScale, 0.0f};
+        poseWalk(g, p, phase, wagAt(elapsed, T_WALK));
+    } else if (elapsed >= T_WALK && elapsed < T_REAR) {
+        float f = (float)(elapsed - T_WALK) / (float)(T_REAR - T_WALK);
         Pose p = {(float)startX, ground - (8 + 6 * f) * gScale, -0.35f * f};
-        poseRear(g, p);
+        poseRear(g, p, wagAt(elapsed, T_REAR));
     } else if (elapsed >= T_REAR && elapsed < T_LAND) {
         float f = (float)(elapsed - T_REAR) / (float)(T_LAND - T_REAR);
         Pose p;
@@ -255,24 +352,32 @@ template <typename G> void drawScene(G &g, uint32_t elapsed, int lapX, int start
         p.y = ground - 8 * gScale - sinf(f * (float)PI) * 46 * gScale;
         p.ang = -0.78f + 1.57f * f;
         poseLeap(g, p);
-    } else if (elapsed >= T_LAND && elapsed < T_CURL) {
+    } else if (elapsed >= T_LAND && elapsed < T_LEAVE) {
         float settle = (float)(elapsed - T_LAND) / 300.0f;
         if (settle > 1.0f) settle = 1.0f;
         bool typing = elapsed > T_TYPE;
         float phase = (float)(elapsed - T_LAND) / 140.0f;
         float pawA = typing ? sinf(phase) * 2.5f : 0.0f;
         float pawB = typing ? sinf(phase + 2.1f) * 2.5f : 0.0f;
-        bool blink = ((elapsed / 200) % 19) == 0;
         Pose p = {(float)sitX, ground - (10 + 6 * (1.0f - settle)) * gScale, 0.0f};
-        poseSit(g, p, pawA, pawB, blink);
-    } else if (elapsed >= T_CURL) {
-        // Sinks from sitting into a curl, then breathes.
-        float f = (float)(elapsed - T_CURL) / (float)(T_SLEEP - T_CURL);
+        poseSit(g, p, pawA, pawB, wagAt(elapsed, T_LEAVE));
+    } else if (elapsed >= T_LEAVE && elapsed < T_ARRIVE) {
+        // Work done: off to the corner, mirrored because it walks the other way.
+        float f = (float)(elapsed - T_LEAVE) / (float)(T_ARRIVE - T_LEAVE);
+        float phase = (float)(elapsed - T_LEAVE) / 90.0f;
+        Pose p;
+        p.x = sitX + (restX - sitX) * f;
+        p.y = ground - (12 + fabsf(sinf(phase)) * 2) * gScale;
+        p.ang = 0.0f;
+        p.flip = true;
+        poseWalk(g, p, phase, wagAt(elapsed, T_ARRIVE));
+    } else if (elapsed >= T_ARRIVE) {
+        float f = (float)(elapsed - T_ARRIVE) / (float)(T_CURL - T_ARRIVE);
         if (f > 1.0f) f = 1.0f;
         float breathe = elapsed > T_SLEEP ? sinf((float)(elapsed - T_SLEEP) / 700.0f) * 0.8f : 0.0f;
-        Pose p = {(float)sitX + 4 * gScale, ground - (14 - 4 * f + breathe) * gScale, 0.0f};
+        Pose p = {(float)restX, ground - (14 - 4 * f + breathe) * gScale, 0.0f, true};
         poseCurl(g, p, f);
-        if (elapsed > T_SLEEP) drawSnooze(g, (int)p.x + (int)(10 * gScale), (int)p.y, elapsed - T_SLEEP);
+        if (elapsed > T_SLEEP) drawSnooze(g, (int)p.x + (int)(12 * gScale), (int)p.y, elapsed - T_SLEEP);
     }
 }
 
@@ -293,8 +398,11 @@ bool drawFoxBootFrame(uint32_t elapsed) {
     int bandH = tftHeight - bandTop;
     gGround = bandH - (int)(10 * gScale); // ground, in band coordinates
     int lapX = tftWidth - (int)(64 * gScale);
-    int startX = (int)(38 * gScale);
+    int startX = (int)(52 * gScale);
     int sitX = lapX - (int)(58 * gScale);
+    int restX = (int)(42 * gScale);
+    gBlock = (int)lroundf(3 * gScale);
+    if (gBlock < 2) gBlock = 2;
 
     static bool spriteTried = false;
     static bool spriteOk = false;
@@ -308,13 +416,13 @@ bool drawFoxBootFrame(uint32_t elapsed) {
 
     if (spriteOk) {
         sprite.fillScreen(bruceConfig.bgColor);
-        drawScene(sprite, elapsed, lapX, startX, sitX, gGround);
+        drawScene(sprite, elapsed, lapX, startX, sitX, restX, gGround);
         sprite.pushSprite(0, bandTop);
     } else {
         // No room for the sprite: paint the band directly. This flickers, but
         // a boot screen that flickers beats one that does not draw at all.
         tft.fillRect(0, bandTop, tftWidth, bandH, bruceConfig.bgColor);
-        drawScene(tft, elapsed, lapX, startX, sitX, gGround + bandTop);
+        drawScene(tft, elapsed, lapX, startX, sitX, restX, gGround + bandTop);
     }
 
     if (elapsed >= T_END) {
@@ -333,7 +441,7 @@ String foxBootCaption(uint32_t elapsed) {
     if (shown > total) shown = total;
     String out = String(kCaption).substring(0, shown);
     // The cursor stops blinking once the fox has stopped typing.
-    if (elapsed < T_CURL && ((elapsed / 350) % 2) == 0) out += "_";
+    if (elapsed < T_LEAVE && ((elapsed / 350) % 2) == 0) out += "_";
     return out;
 }
 
