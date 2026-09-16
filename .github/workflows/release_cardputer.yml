@@ -1,0 +1,94 @@
+name: Release Cardputer build
+
+# Builds the m5stack-cardputer environment (the image that covers both the
+# classic Cardputer and the Cardputer ADV, which is detected at runtime) and
+# publishes the merged flash image as a release asset, so it outlives the
+# 1 day retention of the manual-build artifacts.
+
+on:
+  push:
+    branches:
+      - claude/intelligent-newton-dpym1d
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build_and_release:
+    name: Build and publish m5stack-cardputer
+    runs-on: ubuntu-latest
+    env:
+      SELECTED_ENV: m5stack-cardputer
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Cache PlatformIO Framework
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: ${{ runner.os }}-platformio-${{ hashFiles('platformio.ini') }}
+          restore-keys: |
+            ${{ runner.os }}-platformio-${{ hashFiles('platformio.ini') }}
+            ${{ runner.os }}-platformio-
+
+      - name: PIO libraries cache
+        uses: actions/cache@v4
+        with:
+          path: .pio/libdeps
+          key: ${{ runner.os }}-pio-${{ env.SELECTED_ENV }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: |
+            ${{ runner.os }}-pio-${{ env.SELECTED_ENV }}-${{ hashFiles('platformio.ini') }}
+            ${{ runner.os }}-pio-${{ env.SELECTED_ENV }}-
+
+      - name: Install dependencies
+        run: |
+          pip install requests esptool intelhex
+          pip install platformio
+
+      - name: Prepare PlatformIO file (Bruce version logic)
+        id: prepare_version
+        run: |
+          version="${GITHUB_SHA::7}"
+          echo "VERSION=$version" >> $GITHUB_OUTPUT
+          sed -i "s/-DBRUCE_VERSION=/-DBRUCE_VERSION='\"$version\"' ; /g" ./platformio.ini
+          sed -i "s/-DGIT_COMMIT_HASH='\"Homebrew\"'/!echo '-DGIT_COMMIT_HASH=\\\\\"'\$(git describe --always --dirty)'\\\\\"'/g" ./platformio.ini
+
+      - name: Run Compile
+        run: platformio run -e "${{ env.SELECTED_ENV }}"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.prepare_version.outputs.VERSION }}
+        run: |
+          set -euo pipefail
+          ls -la Bruce-*.*
+          tag="cardputer-${VERSION}"
+          cat > release-notes.md <<NOTES
+          Merged flash image for the \`m5stack-cardputer\` environment, built from \`${GITHUB_REF_NAME}\` at \`${GITHUB_SHA}\`.
+
+          The same image covers the classic Cardputer and the Cardputer ADV: the TCA8418 keyboard controller is probed at runtime, so no separate build is needed.
+
+          Flash with the whole-image offset:
+
+              esptool.py --chip esp32s3 --port /dev/ttyACM0 --baud 921600 write_flash -z 0x0 Bruce-m5stack-cardputer.bin
+          NOTES
+          # Re-running on the same commit replaces the assets instead of failing.
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" Bruce-*.* --clobber
+          else
+            gh release create "$tag" Bruce-*.* \
+              --target "$GITHUB_SHA" \
+              --title "Cardputer / Cardputer ADV build ${VERSION}" \
+              --notes-file release-notes.md \
+              --prerelease
+          fi
+          gh release view "$tag" --json url --jq .url
