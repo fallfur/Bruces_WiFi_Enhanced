@@ -122,4 +122,9 @@ private:
     void apName_from_keyboard(void);
 };
 
+// Stops the DNS server every portal shares. For a caller that is finished
+// with portals altogether, not for the gap between two of them: the next
+// portal's beginAP() rebinds it anyway.
+void stopEvilPortalDns();
+
 #endif

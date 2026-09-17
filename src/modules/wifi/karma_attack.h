@@ -144,22 +144,22 @@ typedef struct {
     bool verifyPassword;
     uint8_t priority;
     AttackTier tier;
-    uint16_t duration;
+    uint32_t duration; // milliseconds, same reason as the tier durations
     bool isCloneAttack;
     uint32_t probeCount;
 } PendingPortal;
 
 // Single active portal instance
 struct BackgroundPortal {
-    EvilPortal *instance;             // Portal instance
-    String portalId;                  // Unique ID for file naming
-    String ssid;                      // SSID being spoofed
-    uint8_t channel;                   // Channel this portal runs on
-    unsigned long lastHeartbeat;      // Last time we checked this portal
-    unsigned long launchTime;         // When portal was launched
-    bool hasCreds;                    // Whether credentials captured
-    String capturedData;              // Submitted form as "name=value" pairs
-    uint32_t clientFingerprint;       // Fingerprint of connected victim
+    EvilPortal *instance;        // Portal instance
+    String portalId;             // Unique ID for file naming
+    String ssid;                 // SSID being spoofed
+    uint8_t channel;             // Channel this portal runs on
+    unsigned long lastHeartbeat; // Last time we checked this portal
+    unsigned long launchTime;    // When portal was launched
+    bool hasCreds;               // Whether credentials captured
+    String capturedData;         // Submitted form as "name=value" pairs
+    uint32_t clientFingerprint;  // Fingerprint of connected victim
 };
 
 // Karma configuration
@@ -180,9 +180,12 @@ typedef struct {
     uint8_t priorityThreshold;
     uint8_t cloneThreshold;
     bool enableBeaconing;
-    uint16_t highTierDuration;
-    uint16_t mediumTierDuration;
-    uint16_t fastTierDuration;
+    // Milliseconds, so 32 bit: at 16 bit, highTierDuration = 180000 silently
+    // became 48928 and the high tier ran for 49 seconds instead of three
+    // minutes. Same bug baseDuration had.
+    uint32_t highTierDuration;
+    uint32_t mediumTierDuration;
+    uint32_t fastTierDuration;
     uint32_t cloneDuration;
     uint8_t maxCloneNetworks;
     // Widened to 32 bit: these hold milliseconds and overflowed a uint16_t

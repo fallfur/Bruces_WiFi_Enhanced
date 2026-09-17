@@ -1169,9 +1169,9 @@ AttackTier determineAttackTier(uint8_t priority) {
     return TIER_NONE;
 }
 
-uint16_t getPortalDuration(AttackTier tier) {
+uint32_t getPortalDuration(AttackTier tier) {
     switch (tier) {
-        case TIER_CLONE: return (uint16_t)attackConfig.cloneDuration;
+        case TIER_CLONE: return attackConfig.cloneDuration;
         case TIER_HIGH: return attackConfig.highTierDuration;
         case TIER_MEDIUM: return attackConfig.mediumTierDuration;
         case TIER_FAST: return attackConfig.fastTierDuration;
