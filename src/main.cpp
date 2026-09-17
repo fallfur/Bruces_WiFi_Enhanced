@@ -179,7 +179,8 @@ volatile int tftHeight = VECTOR_DISPLAY_DEFAULT_WIDTH;
 #include "core/wifi/wifi_common.h"
 #include "modules/bjs_interpreter/interpreter.h" // for JavaScript interpreter
 #include "modules/others/audio.h"                // for playAudioFile
-#include "modules/rf/rf_utils.h"                 // for initCC1101once
+#include "modules/others/fox_boot.h"
+#include "modules/rf/rf_utils.h" // for initCC1101once
 #include <Wire.h>
 
 /*********************************************************************
@@ -268,7 +269,6 @@ void boot_screen() {
     tft.drawCentreString("Bruce", tftWidth / 2, 10, 1);
     tft.setTextSize(FP);
     tft.drawCentreString(BRUCE_VERSION, tftWidth / 2, 25, 1);
-    tft.drawCentreString("mod by Fall", tftWidth / 2, 37, 1);
     tft.setTextSize(FM);
     tft.drawCentreString(
         "PREDATORY FIRMWARE", tftWidth / 2, tftHeight + 2, 1
@@ -293,10 +293,19 @@ void boot_screen_anim() {
     else if (boot_img == 0 && LittleFS.exists("/boot.gif")) boot_img = 4;
     if (bruceConfig.theme.boot_img) boot_img = 5; // override others
 
-    tft.drawPixel(0, 0, 0);       // Forces back communication with TFT, to avoid ghosting
-                                  // Start image loop
-    while (millis() < i + 7000) { // boot image lasts for 5 secs
-        if ((millis() - i > 2000) && !drawn) {
+    String lastCaption = "";
+    tft.drawPixel(0, 0, 0); // Forces back communication with TFT, to avoid ghosting
+
+    // The fox animation sets the length now; a custom boot image keeps the
+    // original seven seconds.
+    uint32_t bootDuration = 7000;
+#if !defined(LITE_VERSION) && defined(HAS_SCREEN)
+    if (!boot_img) bootDuration = foxBootDurationMs();
+#endif
+    while (millis() < i + bootDuration) {
+        // Only the custom-image path needs this wipe; the fox repaints its own
+        // band and the caption line sits inside the area this would clear.
+        if ((millis() - i > 2000) && !drawn && boot_img > 0) {
             tft.fillRect(0, 45, tftWidth, tftHeight - 45, bruceConfig.bgColor);
             if (boot_img > 0 && !drawn) {
                 tft.fillScreen(bruceConfig.bgColor);
@@ -327,40 +336,38 @@ void boot_screen_anim() {
             }
             drawn = true;
         }
-#if !defined(LITE_VERSION)
-        if (!boot_img && (millis() - i > 2200) && (millis() - i) < 2700)
-            tft.drawRect(2 * tftWidth / 3, tftHeight / 2, 2, 2, bruceConfig.priColor);
-        if (!boot_img && (millis() - i > 2700) && (millis() - i) < 2900)
-            tft.fillRect(0, 45, tftWidth, tftHeight - 45, bruceConfig.bgColor);
-        if (!boot_img && (millis() - i > 2900) && (millis() - i) < 3400)
-            tft.drawXBitmap(
-                2 * tftWidth / 3 - 30,
-                5 + tftHeight / 2,
-                bruce_small_bits,
-                bruce_small_width,
-                bruce_small_height,
-                bruceConfig.bgColor,
-                bruceConfig.priColor
-            );
-        if (!boot_img && (millis() - i > 3400) && (millis() - i) < 3600) tft.fillScreen(bruceConfig.bgColor);
-        if (!boot_img && (millis() - i > 3600))
-            tft.drawXBitmap(
-                (tftWidth - 238) / 2,
-                (tftHeight - 133) / 2,
-                bits,
-                bits_width,
-                bits_height,
-                bruceConfig.bgColor,
-                bruceConfig.priColor
-            );
+#if !defined(LITE_VERSION) && defined(HAS_SCREEN)
+        if (!boot_img) {
+            uint32_t elapsed = millis() - i;
+            drawFoxBootFrame(elapsed);
+
+            // The caption types itself out, so its line is repainted rather
+            // than drawn once with the rest of the banner.
+            String caption = foxBootCaption(elapsed);
+            if (caption != lastCaption) {
+                tft.fillRect(0, 36, tftWidth, 12, bruceConfig.bgColor);
+                tft.setTextSize(FP);
+                tft.setTextColor(bruceConfig.priColor, bruceConfig.bgColor);
+                tft.drawCentreString(caption, tftWidth / 2, 37, 1);
+                lastCaption = caption;
+            }
+            delay(30);
+        }
 #endif
         if (check(AnyKeyPress)) // If any key or M5 key is pressed, it'll jump the boot screen
         {
+#if !defined(LITE_VERSION) && defined(HAS_SCREEN)
+            foxBootCleanup();
+#endif
             tft.fillScreen(bruceConfig.bgColor);
             delay(10);
             return;
         }
     }
+
+#if !defined(LITE_VERSION) && defined(HAS_SCREEN)
+    foxBootCleanup();
+#endif
 
     // Clear splashscreen
     tft.fillScreen(bruceConfig.bgColor);
@@ -614,19 +621,17 @@ void loop() {
 
 void loop() {
     tft.setLogging();
-    Serial.println(
-        "\n"
-        "██████  ██████  ██    ██  ██████ ███████ \n"
-        "██   ██ ██   ██ ██    ██ ██      ██      \n"
-        "██████  ██████  ██    ██ ██      █████   \n"
-        "██   ██ ██   ██ ██    ██ ██      ██      \n"
-        "██████  ██   ██  ██████   ██████ ███████ \n"
-        "                                         \n"
-        "         PREDATORY FIRMWARE\n\n"
-        "Tips: Connect to the WebUI for better experience\n"
-        "      Add your network by sending: wifi add ssid password\n\n"
-        "At your command:"
-    );
+    Serial.println("\n"
+                   "██████  ██████  ██    ██  ██████ ███████ \n"
+                   "██   ██ ██   ██ ██    ██ ██      ██      \n"
+                   "██████  ██████  ██    ██ ██      █████   \n"
+                   "██   ██ ██   ██ ██    ██ ██      ██      \n"
+                   "██████  ██   ██  ██████   ██████ ███████ \n"
+                   "                                         \n"
+                   "         PREDATORY FIRMWARE\n\n"
+                   "Tips: Connect to the WebUI for better experience\n"
+                   "      Add your network by sending: wifi add ssid password\n\n"
+                   "At your command:");
 
     // Enable navigation through webUI
     tft.fillScreen(bruceConfig.bgColor);

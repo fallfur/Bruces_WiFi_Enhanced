@@ -9,6 +9,7 @@ on:
   push:
     branches:
       - claude/intelligent-newton-dpym1d
+      - stable-karma-fox
   workflow_dispatch:
 
 permissions:
