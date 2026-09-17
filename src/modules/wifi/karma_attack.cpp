@@ -1746,6 +1746,12 @@ void checkPortals() {
     if (karmaPaused) return;
     unsigned long now = millis();
 
+    // DNS first, on every pass. The heartbeat below is for portal lifetime
+    // bookkeeping and runs twice a second, which is far too slow to answer a
+    // client's captive portal lookups: that is the difference between a victim
+    // who associates and sits there, and one who gets the page.
+    if (activePortal != nullptr && activePortal->instance != nullptr) { activePortal->instance->pumpDNS(); }
+
     if (now - lastPortalHeartbeat < PORTAL_HEARTBEAT_INTERVAL) return;
 
     if (activePortal == nullptr) {
@@ -1913,87 +1919,88 @@ bool selectPortalTemplate(bool isInitialSetup) {
                                    }});
     }
     templateOptions.push_back(
-        {"Load Custom File", [=]() {
+        {"Load Custom File",
+         [=]() {
              drawMainBorderWithTitle("LOAD FROM");
              std::vector<Option> directOptions;
 
              FS *fs = nullptr;
              if (getFsStorage(fs) && fs == &SD) {
-                 directOptions.push_back(
-                     {"SD Card", [=]() {
-                          drawMainBorderWithTitle("BROWSE SD");
-                          String templateFile = loopSD(SD, true, "HTML", "/");
-                          if (templateFile.length() > 0) {
-                              PortalTemplate customTmpl;
-                              String filename = templateFile.substring(templateFile.lastIndexOf('/') + 1);
-                              customTmpl.name = getDisplayName("/" + filename, true);
-                              customTmpl.filename = templateFile;
-                              customTmpl.isDefault = false;
-                              customTmpl.verifyPassword = false;
-                              File file = SD.open(templateFile, FILE_READ);
-                              if (file) {
-                                  String firstLine = file.readStringUntil('\n');
-                                  file.close();
-                                  if (firstLine.indexOf("verify=\"true\"") != -1) {
-                                      customTmpl.verifyPassword = true;
-                                  }
-                              }
-                              selectedTemplate = customTmpl;
-                              templateSelected = true;
-                              if (portalTemplates.size() < MAX_PORTAL_TEMPLATES)
-                                  portalTemplates.push_back(customTmpl);
-                              drawMainBorderWithTitle("SELECTED");
-                              displayTextLine(customTmpl.name);
-                              delay(1500);
-                              if (isInitialSetup) {
-                                  drawMainBorderWithTitle("KARMA SETUP");
-                                  displayTextLine("Selected: " + customTmpl.name);
-                                  delay(1000);
-                              }
-                          }
-                      }}
-                 );
+                 directOptions.push_back({"SD Card", [=]() {
+                                              drawMainBorderWithTitle("BROWSE SD");
+                                              String templateFile = loopSD(SD, true, "HTML", "/");
+                                              if (templateFile.length() > 0) {
+                                                  PortalTemplate customTmpl;
+                                                  String filename = templateFile.substring(
+                                                      templateFile.lastIndexOf('/') + 1
+                                                  );
+                                                  customTmpl.name = getDisplayName("/" + filename, true);
+                                                  customTmpl.filename = templateFile;
+                                                  customTmpl.isDefault = false;
+                                                  customTmpl.verifyPassword = false;
+                                                  File file = SD.open(templateFile, FILE_READ);
+                                                  if (file) {
+                                                      String firstLine = file.readStringUntil('\n');
+                                                      file.close();
+                                                      if (firstLine.indexOf("verify=\"true\"") != -1) {
+                                                          customTmpl.verifyPassword = true;
+                                                      }
+                                                  }
+                                                  selectedTemplate = customTmpl;
+                                                  templateSelected = true;
+                                                  if (portalTemplates.size() < MAX_PORTAL_TEMPLATES)
+                                                      portalTemplates.push_back(customTmpl);
+                                                  drawMainBorderWithTitle("SELECTED");
+                                                  displayTextLine(customTmpl.name);
+                                                  delay(1500);
+                                                  if (isInitialSetup) {
+                                                      drawMainBorderWithTitle("KARMA SETUP");
+                                                      displayTextLine("Selected: " + customTmpl.name);
+                                                      delay(1000);
+                                                  }
+                                              }
+                                          }});
              }
 
-             directOptions.push_back(
-                 {"LittleFS", [=]() {
-                      drawMainBorderWithTitle("BROWSE LITTLEFS");
-                      if (setupLittleFS()) {
-                          String templateFile = loopSD(LittleFS, true, "HTML", "/");
-                          if (templateFile.length() > 0) {
-                              PortalTemplate customTmpl;
-                              String filename = templateFile.substring(templateFile.lastIndexOf('/') + 1);
-                              customTmpl.name = getDisplayName("/" + filename, false);
-                              customTmpl.filename = templateFile;
-                              customTmpl.isDefault = false;
-                              customTmpl.verifyPassword = false;
-                              File file = LittleFS.open(templateFile, FILE_READ);
-                              if (file) {
-                                  String firstLine = file.readStringUntil('\n');
-                                  file.close();
-                                  if (firstLine.indexOf("verify=\"true\"") != -1) {
-                                      customTmpl.verifyPassword = true;
-                                  }
-                              }
-                              selectedTemplate = customTmpl;
-                              templateSelected = true;
-                              if (portalTemplates.size() < MAX_PORTAL_TEMPLATES)
-                                  portalTemplates.push_back(customTmpl);
-                              drawMainBorderWithTitle("SELECTED");
-                              displayTextLine(customTmpl.name);
-                              delay(1500);
-                              if (isInitialSetup) {
-                                  drawMainBorderWithTitle("KARMA SETUP");
-                                  displayTextLine("Selected: " + customTmpl.name);
-                                  delay(1000);
-                              }
-                          }
-                      } else {
-                          displayTextLine("LittleFS error!");
-                          delay(1000);
-                      }
-                  }}
-             );
+             directOptions.push_back({"LittleFS", [=]() {
+                                          drawMainBorderWithTitle("BROWSE LITTLEFS");
+                                          if (setupLittleFS()) {
+                                              String templateFile = loopSD(LittleFS, true, "HTML", "/");
+                                              if (templateFile.length() > 0) {
+                                                  PortalTemplate customTmpl;
+                                                  String filename = templateFile.substring(
+                                                      templateFile.lastIndexOf('/') + 1
+                                                  );
+                                                  customTmpl.name = getDisplayName("/" + filename, false);
+                                                  customTmpl.filename = templateFile;
+                                                  customTmpl.isDefault = false;
+                                                  customTmpl.verifyPassword = false;
+                                                  File file = LittleFS.open(templateFile, FILE_READ);
+                                                  if (file) {
+                                                      String firstLine = file.readStringUntil('\n');
+                                                      file.close();
+                                                      if (firstLine.indexOf("verify=\"true\"") != -1) {
+                                                          customTmpl.verifyPassword = true;
+                                                      }
+                                                  }
+                                                  selectedTemplate = customTmpl;
+                                                  templateSelected = true;
+                                                  if (portalTemplates.size() < MAX_PORTAL_TEMPLATES)
+                                                      portalTemplates.push_back(customTmpl);
+                                                  drawMainBorderWithTitle("SELECTED");
+                                                  displayTextLine(customTmpl.name);
+                                                  delay(1500);
+                                                  if (isInitialSetup) {
+                                                      drawMainBorderWithTitle("KARMA SETUP");
+                                                      displayTextLine("Selected: " + customTmpl.name);
+                                                      delay(1000);
+                                                  }
+                                              }
+                                          } else {
+                                              displayTextLine("LittleFS error!");
+                                              delay(1000);
+                                          }
+                                      }});
 
              directOptions.push_back({"Back", [=]() {}});
              loopOptions(directOptions);
@@ -2049,7 +2056,9 @@ void launchTieredEvilPortal(PendingPortal &portal) {
 void executeTieredAttackStrategy() {
     if (pendingPortals.empty() || !templateSelected || isPortalActive || karmaPaused) return;
     std::sort(
-        pendingPortals.begin(), pendingPortals.end(), [](const PendingPortal &a, const PendingPortal &b) {
+        pendingPortals.begin(),
+        pendingPortals.end(),
+        [](const PendingPortal &a, const PendingPortal &b) {
             if (a.isCloneAttack && !b.isCloneAttack) return true;
             if (!a.isCloneAttack && b.isCloneAttack) return false;
             return a.priority > b.priority;
@@ -3213,7 +3222,8 @@ void karma_setup() {
                  [&]() {
                      std::vector<Option> broadcastOptions;
                      broadcastOptions.push_back(
-                         {broadcastAttack.isActive() ? "Stop Broadcast" : "Start Broadcast", [&]() {
+                         {broadcastAttack.isActive() ? "Stop Broadcast" : "Start Broadcast",
+                          [&]() {
                               if (broadcastAttack.isActive()) {
                                   broadcastAttack.stop();
                                   if (attackConfig.enableBeaconing) {
@@ -3257,7 +3267,8 @@ void karma_setup() {
                                                      loopOptions(speedOptions);
                                                  }});
                      broadcastOptions.push_back(
-                         {"Show Stats", [&]() {
+                         {"Show Stats",
+                          [&]() {
                               drawMainBorderWithTitle("BROADCAST STATS");
                               int y = 40;
                               tft.setTextSize(1);

