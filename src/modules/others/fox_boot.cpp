@@ -24,15 +24,17 @@
 namespace {
 
 // RGB565, kept independent of the theme: the point is that it reads as a fox.
-constexpr uint16_t FOX_ORANGE = 0xC325; // rust coat
-constexpr uint16_t FOX_DARK = 0x59A4;   // inside the ears
-constexpr uint16_t FOX_LEG = 0x4943;    // the dark stockings
-constexpr uint16_t FOX_WHITE = 0xEE75;  // cream: muzzle, tail tip
-constexpr uint16_t FOX_BLACK = 0x2104;
-constexpr uint16_t LAPTOP_BODY = 0xC618;
-constexpr uint16_t LAPTOP_EDGE = 0x8410;
-constexpr uint16_t LAPTOP_SCREEN = 0x0841;
-constexpr uint16_t CODE_GREEN = 0x07EB;
+// Magenta, to sit with Bruce's purple rather than fight it.
+constexpr uint16_t FOX_ORANGE = 0xD173; // the coat
+constexpr uint16_t FOX_DARK = 0x78AD;   // inside the ears
+constexpr uint16_t FOX_LEG = 0x4868;    // the dark stockings
+constexpr uint16_t FOX_WHITE = 0xFE3D;  // pale pink: muzzle, tail tip
+constexpr uint16_t FOX_BLACK = 0x1823;
+constexpr uint16_t FOX_OUTLINE = 0x1823; // one shade off black, all round
+constexpr uint16_t LAPTOP_BODY = 0xBD98;
+constexpr uint16_t LAPTOP_EDGE = 0x7B70;
+constexpr uint16_t LAPTOP_SCREEN = 0x1843;
+constexpr uint16_t CODE_GREEN = 0xFB5A;
 
 // Sequence, in milliseconds from the first frame.
 constexpr uint32_t T_WAIT = 500;     // banner alone
@@ -68,6 +70,7 @@ void pt(const Pose &p, float lx, float ly, int &ox, int &oy) {
 }
 
 int gBlock = 3;
+bool gOutline = false; // drawing the dark contour pass, not the fill
 
 inline int snapDown(int v) { return (v >= 0 ? (v / gBlock) : ((v - gBlock + 1) / gBlock)) * gBlock; }
 
@@ -122,9 +125,15 @@ template <typename G> void blockTri(G &g, int x1, int y1, int x2, int y2, int x3
     }
 }
 
+// Every pose is drawn twice: once expanded in near-black, then filled. Without
+// the contour a curled-up fox is a single silhouette and reads as a ball.
 template <typename G> void dot(G &g, const Pose &p, float lx, float ly, float r, uint16_t color) {
     int x, y;
     pt(p, lx, ly, x, y);
+    if (gOutline) {
+        r += 1.6f;
+        color = FOX_OUTLINE;
+    }
     int rr = (int)lroundf(r * gScale);
     blockCircle(g, x, y, rr < 1 ? 1 : rr, color);
 }
@@ -135,6 +144,16 @@ void tri(G &g, const Pose &p, float ax, float ay, float bx, float by, float cx, 
     pt(p, ax, ay, x1, y1);
     pt(p, bx, by, x2, y2);
     pt(p, cx, cy, x3, y3);
+    if (gOutline) {
+        int cxm = (x1 + x2 + x3) / 3, cym = (y1 + y2 + y3) / 3;
+        x1 += (x1 > cxm ? 2 : -2);
+        y1 += (y1 > cym ? 2 : -2);
+        x2 += (x2 > cxm ? 2 : -2);
+        y2 += (y2 > cym ? 2 : -2);
+        x3 += (x3 > cxm ? 2 : -2);
+        y3 += (y3 > cym ? 2 : -2);
+        color = FOX_OUTLINE;
+    }
     blockTri(g, x1, y1, x2, y2, x3, y3, color);
 }
 
@@ -250,26 +269,33 @@ template <typename G> void poseSit(G &g, const Pose &p, float pawA, float pawB, 
     drawHead(g, p, 12, -29);
 }
 
-// Curled up asleep, nose under the tail.
+// Asleep: an oval body, the head down at one end with the ears still up, and
+// the tail curled round the front with its tip by the nose. The first cut was
+// one big circle with a head buried in it, which read as a ball.
 template <typename G> void poseCurl(G &g, const Pose &p, float tuck) {
-    dot(g, p, 0, -2, 13.0f, FOX_ORANGE);
-    dot(g, p, -6, 4, 9.0f, FOX_ORANGE);
-    dot(g, p, 7, 3, 8.0f, FOX_ORANGE);
+    for (int i = 0; i <= 4; i++) {
+        float f = i / 4.0f;
+        dot(g, p, -11 + 22 * f, 0, 9.5f - 3.0f * fabsf(f - 0.5f) * 2.0f, FOX_ORANGE);
+    }
 
-    const float tx[5] = {-13, -10, -2, 7, 13};
-    const float ty[5] = {2, 9, 13, 12, 7};
-    for (int i = 0; i < 5; i++) dot(g, p, tx[i], ty[i], 6.0f - i * 0.3f, FOX_ORANGE);
-    dot(g, p, 16, 2, 4.5f, FOX_WHITE);
+    float hx = 13, hy = -4 - 3 * (1.0f - tuck);
+    dot(g, p, hx, hy, 7.5f, FOX_ORANGE);
+    tri(g, p, hx - 7, hy - 3, hx - 8, hy - 13, hx - 1, hy - 6, FOX_ORANGE);
+    tri(g, p, hx + 1, hy - 6, hx + 4, hy - 13, hx + 7, hy - 3, FOX_ORANGE);
+    tri(g, p, hx - 5, hy - 4, hx - 6, hy - 10, hx - 2, hy - 7, FOX_DARK);
+    tri(g, p, hx + 3, hy - 7, hx + 4, hy - 10, hx + 5, hy - 4, FOX_DARK);
+    tri(g, p, hx + 2, hy - 2, hx + 15, hy + 4, hx + 2, hy + 6, FOX_ORANGE);
+    tri(g, p, hx + 3, hy + 2, hx + 15, hy + 5, hx + 3, hy + 7, FOX_WHITE);
+    dot(g, p, hx + 14, hy + 4, 1.6f, FOX_BLACK);
 
-    float hy = -10 + 3 * tuck;
-    dot(g, p, 9, hy, 8.0f, FOX_ORANGE);
-    tri(g, p, 3, hy - 4, 2, hy - 12, 8, hy - 6, FOX_ORANGE);
-    tri(g, p, 9, hy - 6, 13, hy - 12, 15, hy - 4, FOX_ORANGE);
-    tri(g, p, 4, hy - 5, 4, hy - 10, 7, hy - 7, FOX_DARK);
-    tri(g, p, 11, hy - 6, 12, hy - 10, 14, hy - 5, FOX_DARK);
-    tri(g, p, 12, hy - 1, 24, hy + 4, 12, hy + 6, FOX_ORANGE);
-    tri(g, p, 13, hy + 2, 24, hy + 5, 13, hy + 7, FOX_WHITE);
-    dot(g, p, 23, hy + 4, 1.6f, FOX_BLACK);
+    const float tx[5] = {-12, -8, 0, 8, 15};
+    const float ty[5] = {3, 9, 12, 11, 8};
+    // The tail lies on the flank, so on the fill pass it gets its own contour.
+    if (!gOutline) {
+        for (int i = 0; i < 5; i++) dot(g, p, tx[i], ty[i], 6.6f - i * 0.2f, FOX_OUTLINE);
+    }
+    for (int i = 0; i < 5; i++) dot(g, p, tx[i], ty[i], 5.2f - i * 0.2f, FOX_ORANGE);
+    dot(g, p, 20, 6, 4.0f, FOX_WHITE);
 }
 
 // Laptop seen three-quarters from the front: a skewed base and a lid leaning
@@ -340,10 +366,16 @@ void drawScene(G &g, uint32_t elapsed, int lapX, int startX, int sitX, int restX
         float f = (float)(elapsed - T_WAIT) / (float)(T_WALK - T_WAIT);
         float phase = (float)(elapsed - T_WAIT) / 90.0f;
         Pose p = {startX - (26 - 26 * f) * gScale, ground - (12 + fabsf(sinf(phase)) * 2) * gScale, 0.0f};
+        gOutline = true;
+        poseWalk(g, p, phase, wagAt(elapsed, T_WALK));
+        gOutline = false;
         poseWalk(g, p, phase, wagAt(elapsed, T_WALK));
     } else if (elapsed >= T_WALK && elapsed < T_REAR) {
         float f = (float)(elapsed - T_WALK) / (float)(T_REAR - T_WALK);
         Pose p = {(float)startX, ground - (8 + 6 * f) * gScale, -0.35f * f};
+        gOutline = true;
+        poseRear(g, p, wagAt(elapsed, T_REAR));
+        gOutline = false;
         poseRear(g, p, wagAt(elapsed, T_REAR));
     } else if (elapsed >= T_REAR && elapsed < T_LAND) {
         float f = (float)(elapsed - T_REAR) / (float)(T_LAND - T_REAR);
@@ -351,6 +383,9 @@ void drawScene(G &g, uint32_t elapsed, int lapX, int startX, int sitX, int restX
         p.x = startX + (sitX - startX) * f;
         p.y = ground - 8 * gScale - sinf(f * (float)PI) * 46 * gScale;
         p.ang = -0.78f + 1.57f * f;
+        gOutline = true;
+        poseLeap(g, p);
+        gOutline = false;
         poseLeap(g, p);
     } else if (elapsed >= T_LAND && elapsed < T_LEAVE) {
         float settle = (float)(elapsed - T_LAND) / 300.0f;
@@ -360,6 +395,9 @@ void drawScene(G &g, uint32_t elapsed, int lapX, int startX, int sitX, int restX
         float pawA = typing ? sinf(phase) * 2.5f : 0.0f;
         float pawB = typing ? sinf(phase + 2.1f) * 2.5f : 0.0f;
         Pose p = {(float)sitX, ground - (10 + 6 * (1.0f - settle)) * gScale, 0.0f};
+        gOutline = true;
+        poseSit(g, p, pawA, pawB, wagAt(elapsed, T_LEAVE));
+        gOutline = false;
         poseSit(g, p, pawA, pawB, wagAt(elapsed, T_LEAVE));
     } else if (elapsed >= T_LEAVE && elapsed < T_ARRIVE) {
         // Work done: off to the corner, mirrored because it walks the other way.
@@ -370,12 +408,18 @@ void drawScene(G &g, uint32_t elapsed, int lapX, int startX, int sitX, int restX
         p.y = ground - (12 + fabsf(sinf(phase)) * 2) * gScale;
         p.ang = 0.0f;
         p.flip = true;
+        gOutline = true;
+        poseWalk(g, p, phase, wagAt(elapsed, T_ARRIVE));
+        gOutline = false;
         poseWalk(g, p, phase, wagAt(elapsed, T_ARRIVE));
     } else if (elapsed >= T_ARRIVE) {
         float f = (float)(elapsed - T_ARRIVE) / (float)(T_CURL - T_ARRIVE);
         if (f > 1.0f) f = 1.0f;
         float breathe = elapsed > T_SLEEP ? sinf((float)(elapsed - T_SLEEP) / 700.0f) * 0.8f : 0.0f;
         Pose p = {(float)restX, ground - (14 - 4 * f + breathe) * gScale, 0.0f, true};
+        gOutline = true;
+        poseCurl(g, p, f);
+        gOutline = false;
         poseCurl(g, p, f);
         if (elapsed > T_SLEEP) drawSnooze(g, (int)p.x + (int)(12 * gScale), (int)p.y, elapsed - T_SLEEP);
     }
