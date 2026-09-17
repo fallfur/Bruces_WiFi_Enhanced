@@ -356,11 +356,18 @@ void boot_screen_anim() {
 #endif
         if (check(AnyKeyPress)) // If any key or M5 key is pressed, it'll jump the boot screen
         {
+#if !defined(LITE_VERSION) && defined(HAS_SCREEN)
+            foxBootCleanup();
+#endif
             tft.fillScreen(bruceConfig.bgColor);
             delay(10);
             return;
         }
     }
+
+#if !defined(LITE_VERSION) && defined(HAS_SCREEN)
+    foxBootCleanup();
+#endif
 
     // Clear splashscreen
     tft.fillScreen(bruceConfig.bgColor);

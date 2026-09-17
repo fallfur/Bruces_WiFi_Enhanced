@@ -51,6 +51,9 @@ constexpr uint32_t T_END = 18000;
 const char kCaption[] = "modded by Fall";
 constexpr uint32_t kCaptionCharMs = 200;
 
+bool gSpriteTried = false;
+bool gSpriteOk = false;
+
 float gScale = 1.0f;
 int gGround = 0;
 
@@ -448,17 +451,15 @@ bool drawFoxBootFrame(uint32_t elapsed) {
     gBlock = (int)lroundf(3 * gScale);
     if (gBlock < 2) gBlock = 2;
 
-    static bool spriteTried = false;
-    static bool spriteOk = false;
-    if (!spriteTried) {
-        spriteTried = true;
+    if (!gSpriteTried) {
+        gSpriteTried = true;
         sprite.deleteSprite();
         sprite.createSprite(tftWidth, bandH);
-        spriteOk = sprite.width() >= tftWidth && sprite.height() >= bandH;
-        if (!spriteOk) sprite.deleteSprite();
+        gSpriteOk = sprite.width() >= tftWidth && sprite.height() >= bandH;
+        if (!gSpriteOk) sprite.deleteSprite();
     }
 
-    if (spriteOk) {
+    if (gSpriteOk) {
         sprite.fillScreen(bruceConfig.bgColor);
         drawScene(sprite, elapsed, lapX, startX, sitX, restX, gGround);
         sprite.pushSprite(0, bandTop);
@@ -469,11 +470,22 @@ bool drawFoxBootFrame(uint32_t elapsed) {
         drawScene(tft, elapsed, lapX, startX, sitX, restX, gGround + bandTop);
     }
 
-    if (elapsed >= T_END) {
-        sprite.deleteSprite();
-        spriteOk = false;
-    }
     return true;
+}
+
+// The frame buffer is a good 38 KB of heap and the boot loop has two exits:
+// the animation running out, and any key skipping it. It used to be freed from
+// inside the frame function on the frame past the end -- a frame the loop
+// never asks for, since it stops at exactly that point -- so in practice it was
+// never freed at all, and everything that came later booted with 38 KB less to
+// work with. Enough to stop the captive portal's DHCP server handing out a
+// lease.
+void foxBootCleanup() {
+    if (gSpriteTried) {
+        sprite.deleteSprite();
+        gSpriteTried = false;
+        gSpriteOk = false;
+    }
 }
 
 // The caption spells itself out under the version while the fox types, one

@@ -13,6 +13,10 @@ bool drawFoxBootFrame(uint32_t elapsed);
 // Total length of the sequence, so the boot loop knows how long to run.
 uint32_t foxBootDurationMs();
 
+// Releases the animation's frame buffer. Must be called however the boot
+// screen ends, including when a key skips it.
+void foxBootCleanup();
+
 // The caption as it stands at this point of the animation: "modded by Fall"
 // spelled out one character per keystroke, with a blinking cursor.
 String foxBootCaption(uint32_t elapsed);
