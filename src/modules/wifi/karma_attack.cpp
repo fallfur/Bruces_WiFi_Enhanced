@@ -689,6 +689,29 @@ static bool enqueuePendingPortal(const PendingPortal &portal, bool prioritize) {
 
 static void destroyActivePortal() {
     if (state().activePortal == nullptr) return;
+
+    // A queued ESSID cannot be served while another portal owns the one softAP
+    // the ESP32 has, and the sniffer is off for that whole window, so nothing
+    // refreshes its timestamp either. Charging it for that wait is what emptied
+    // the queue between the first and the second ESSID: push every pending
+    // entry's clock forward by however long this portal held the radio, so the
+    // expiry in checkPendingPortals() measures time spent *eligible*, not time
+    // spent blocked.
+    unsigned long teardownNow = millis();
+    unsigned long blockedMs = teardownNow - state().activePortal->launchTime;
+    for (auto &pending : pendingPortalsRef()) {
+        pending.timestamp += blockedMs;
+        // An entry queued after this portal launched must not end up in the
+        // future (millis() wraps, so compare as a signed difference).
+        if ((long)(pending.timestamp - teardownNow) > 0) pending.timestamp = teardownNow;
+    }
+    Serial.printf(
+        "[PORTAL] %s down after %lus, %u ESSID(s) queued\n",
+        state().activePortal->ssid.c_str(),
+        blockedMs / 1000UL,
+        (unsigned)pendingPortalsRef().size()
+    );
+
     if (state().activePortal->instance != nullptr) {
         delete state().activePortal->instance;
         state().activePortal->instance = nullptr;
@@ -1811,8 +1834,6 @@ void launchBackgroundPortal(
     if (portal == nullptr) { return; }
     portal->ssid = ssid;
     portal->channel = channel;
-    portal->launchTime = millis();
-    portal->lastHeartbeat = millis();
     portal->hasCreds = false;
     portal->clientFingerprint = 0;
     portal->portalId = generatePortalId(templateName);
@@ -1822,6 +1843,13 @@ void launchBackgroundPortal(
         delete portal;
         return;
     }
+
+    // Started here, not before the constructor: EvilPortal::beginAP() busy
+    // waits 3s for the softAP and the template is read off the filesystem
+    // first, and that is dead time the victim never sees. On the old 5 minute
+    // dwell it rounded away; on a 30s dwell it was a tenth of the window.
+    portal->launchTime = millis();
+    portal->lastHeartbeat = portal->launchTime;
 
     portal->instance->setBaseDuration(attackConfig.baseDuration / 1000);
     portal->instance->setExtendedDuration(attackConfig.extendedDuration / 1000);
@@ -2111,16 +2139,26 @@ void executeTieredAttackStrategy() {
     }
 }
 
-// A queued ESSID is dropped once it has waited for several dwell slots, so the
-// queue does not drain faster than the portals can serve it.
+// A queued ESSID is dropped once it has waited -- with the radio actually free,
+// see destroyActivePortal() -- for several dwell slots, so the queue does not
+// drain faster than the portals can serve it.
+//
+// The floor is the 15 minutes the fixed 5 minute dwell used to give. Deriving
+// the whole window from the dwell meant that lowering the dwell from the menu
+// also shortened the window: with 30s or 60s selected it collapsed to 5
+// minutes, every ESSID heard during the first portal was thrown away the moment
+// that portal ended, and no second portal was ever launched. The dwell decides
+// how long one ESSID is offered, not how long an ESSID already heard stays
+// worth offering.
 static unsigned long pendingPortalExpiryMs() {
     unsigned long expiry = (unsigned long)attackConfig.baseDuration * 3;
-    return expiry < 300000UL ? 300000UL : expiry;
+    return expiry < 900000UL ? 900000UL : expiry;
 }
 
 void checkPendingPortals() {
     if (pendingPortals.empty() || !templateSelected || isPortalActive || karmaPaused) return;
     unsigned long now = millis();
+    size_t queuedBefore = pendingPortals.size();
     pendingPortals.erase(
         std::remove_if(
             pendingPortals.begin(),
@@ -2131,6 +2169,13 @@ void checkPendingPortals() {
         ),
         pendingPortals.end()
     );
+    if (pendingPortals.size() != queuedBefore) {
+        Serial.printf(
+            "[PORTAL] Dropped %u stale queued ESSID(s), %u left\n",
+            (unsigned)(queuedBefore - pendingPortals.size()),
+            (unsigned)pendingPortals.size()
+        );
+    }
     executeTieredAttackStrategy();
 }
 
