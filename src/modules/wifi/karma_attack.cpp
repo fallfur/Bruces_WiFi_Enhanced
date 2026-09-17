@@ -861,9 +861,17 @@ void savePortalCredentials(
 // submitted form, so the line count is the capture count. The Karma menu used
 // to report only on /PortalCreds, which meant it showed "no captures" even when
 // credentials were being harvested correctly.
+// Counting means reading every captured line, and this runs from the Karma
+// menu with the sniffer in promiscuous mode, the WiFi driver busy and, on SD,
+// a shared SPI bus. Unbounded and without yielding it can hold the CPU long
+// enough for the task watchdog to fire, which from the outside looks like the
+// device rebooting the moment the menu is opened.
+constexpr size_t kMaxCredFiles = 64;
+constexpr size_t kMaxCredBytesPerFile = 64 * 1024;
+
 static size_t countEvilPortalCreds() {
     FS *fs = nullptr;
-    if (!getFsStorage(fs)) return 0;
+    if (!getFsStorage(fs) || fs == nullptr) return 0;
     if (!fs->exists("/BruceEvilCreds")) return 0;
 
     File dir = fs->open("/BruceEvilCreds");
@@ -874,22 +882,29 @@ static size_t countEvilPortalCreds() {
     }
 
     size_t total = 0;
-    uint8_t buf[128];
+    size_t files = 0;
+    uint8_t buf[512];
     File entry = dir.openNextFile();
-    while (entry) {
+    while (entry && files < kMaxCredFiles) {
         String name = String(entry.name());
         name.toLowerCase();
         if (!entry.isDirectory() && name.endsWith(".csv")) {
+            files++;
+            size_t consumed = 0;
+            uint32_t chunk = 0;
             int n;
-            while ((n = entry.read(buf, sizeof(buf))) > 0) {
+            while (consumed < kMaxCredBytesPerFile && (n = entry.read(buf, sizeof(buf))) > 0) {
                 for (int i = 0; i < n; i++) {
                     if (buf[i] == '\n') total++;
                 }
+                consumed += (size_t)n;
+                if ((chunk++ & 7) == 0) vTaskDelay(1); // feed the watchdog
             }
         }
         entry.close();
         entry = dir.openNextFile();
     }
+    if (entry) entry.close();
     dir.close();
     return total;
 }
@@ -3308,12 +3323,21 @@ void karma_setup() {
 
                 {"View Captures",
                  [&]() {
+                     // Reading files with the sniffer running puts SD traffic
+                     // and the promiscuous callback on the same bus and the
+                     // same core. Stop sniffing while the browser is open.
+                     bool wasSniffing = !karmaPaused;
+                     if (wasSniffing) {
+                         esp_wifi_set_promiscuous(false);
+                         vTaskDelay(50 / portTICK_PERIOD_MS);
+                     }
+
                      // Built before the vector so the label outlives loopOptions().
                      String credsLabel = "Creds: " + String(countEvilPortalCreds());
                      std::vector<Option> viewOptions = {
                          {credsLabel.c_str(),
                  [&]() {
-                              FS *fs;
+                              FS *fs = nullptr;
                               if (getFsStorage(fs) && fs->exists("/BruceEvilCreds")) {
                                   loopSD(*fs, false, "CSV", "/BruceEvilCreds");
                               } else {
@@ -3323,7 +3347,7 @@ void karma_setup() {
                           }},
                          {"Portal Creds",
                  [&]() {
-                              FS *fs;
+                              FS *fs = nullptr;
                               if (getFsStorage(fs) && fs->exists("/PortalCreds")) {
                                   loopSD(*fs, false, "TXT", "/PortalCreds");
                               } else {
@@ -3333,7 +3357,7 @@ void karma_setup() {
                           }},
                          {"Handshakes",
                  [&]() {
-                              FS *fs;
+                              FS *fs = nullptr;
                               if (getFsStorage(fs) && fs->exists("/BrucePCAP/handshakes")) {
                                   loopSD(*fs, false, "PCAP", "/BrucePCAP/handshakes");
                               } else {
@@ -3344,6 +3368,12 @@ void karma_setup() {
                          {"Back", [&]() {}}
                      };
                      loopOptions(viewOptions);
+
+                     if (wasSniffing) {
+                         vTaskDelay(50 / portTICK_PERIOD_MS);
+                         esp_wifi_set_promiscuous(true);
+                     }
+                     screenNeedsRedraw = true;
                  }},
 
                 {"Save Probes",
